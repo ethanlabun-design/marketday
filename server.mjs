@@ -1,25 +1,29 @@
 import http from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdir, writeFile, rename } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 import { randomUUID, randomInt } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 
 const port = Number(process.env.PORT || 3000);
+const BUILD = '2026.11.06.07';
+const DATA_FILE = resolve(process.env.STOCK_TICKER_DATA || './data/rooms.json');
+const ROOM_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const html = await readFile(new URL('./index.html', import.meta.url));
 const httpServer = http.createServer((req, res) => {
   const apiMatch = req.url?.match(/^\/api\/rooms\/(\d{6})$/);
   if (req.method === 'GET' && apiMatch) {
     const room = rooms.get(apiMatch[1]);
     if (!room) {
-      res.writeHead(404, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      res.writeHead(404, { 'content-type': 'application/json', 'cache-control': 'no-store', 'x-app-build': BUILD });
       res.end(JSON.stringify({ error: 'Room not found' }));
       return;
     }
-    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store, max-age=0' });
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store, max-age=0', 'x-app-build': BUILD });
     res.end(JSON.stringify({ state: publicState(room) }));
     return;
   }
   if (req.url === '/' || req.url?.startsWith('/?')) {
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-app-build': BUILD });
     res.end(html);
   } else {
     res.writeHead(404, { 'content-type': 'text/plain' });
@@ -28,6 +32,39 @@ const httpServer = http.createServer((req, res) => {
 });
 const wss = new WebSocketServer({ server: httpServer, maxPayload: 16 * 1024, perMessageDeflate: false });
 const rooms = new Map();
+let persistQueue = Promise.resolve();
+function persistRooms() {
+  const now = Date.now();
+  const snapshot = [...rooms.values()]
+    .filter(room => now - (room.lastActivity || now) < ROOM_RETENTION_MS)
+    .slice(-200)
+    .map(room => ({ ...room, players: room.players.map(({ socket, ...player }) => ({ ...player, online: false })) }));
+  persistQueue = persistQueue.catch(() => {}).then(async () => {
+    await mkdir(dirname(DATA_FILE), { recursive: true });
+    const tempFile = `${DATA_FILE}.tmp`;
+    await writeFile(tempFile, JSON.stringify(snapshot));
+    await rename(tempFile, DATA_FILE);
+  }).catch(err => console.error('Room save failed:', err.message));
+  return persistQueue;
+}
+async function loadRooms() {
+  try {
+    const saved = JSON.parse(await readFile(DATA_FILE, 'utf8'));
+    const cutoff = Date.now() - ROOM_RETENTION_MS;
+    for (const room of Array.isArray(saved) ? saved : []) {
+      if (!/^\d{6}$/.test(room.code || '') || !Array.isArray(room.players) || (room.lastActivity || 0) < cutoff) continue;
+      room.players = room.players.filter(p => p && p.id && typeof p.name === 'string').slice(0, 6).map(p => ({ ...p, socket: null, online: false, isBot: !!p.isBot }));
+      room.max = [12, 20, 30].includes(room.max) ? room.max : 12;
+      room.prices = Array.isArray(room.prices) && room.prices.length === 6 ? room.prices : Array(6).fill(100);
+      room.history = Array.isArray(room.history) && room.history.length === 6 ? room.history : Array.from({ length: 6 }, () => [100]);
+      room.events = Array.isArray(room.events) ? room.events.slice(0, 12) : [];
+      room.purchases = Array.isArray(room.purchases) ? room.purchases : [];
+      rooms.set(room.code, room);
+    }
+  } catch (err) {
+    if (err.code !== 'ENOENT') console.error('Room load failed:', err.message);
+  }
+}
 const names = ['AI', 'Crypto', 'Real Estate', 'Defense', 'Government', 'Medicine'];
 const headlines = [
   { title: 'AI LABS UNVEIL A MODEL THAT CAN REASON', detail: 'A leap in machine intelligence sends investors racing toward the sector.', moves: [[0, 20], [4, 5]] },
@@ -49,15 +86,15 @@ const headlines = [
   { title: 'COURT BLOCKS A SWEEPING TECH RULE', detail: 'Investors welcome a reprieve for AI developers and crypto platforms.', moves: [[0, 10], [1, 10]] },
   { title: 'MEDICARE EXPANSION WINS A FINAL VOTE', detail: 'A larger public health budget improves the outlook for medical suppliers.', moves: [[5, 15], [4, 5]] }
 ];
-const freshPlayer = (name, id) => ({ id, name, cash: 500000, shares: Array(6).fill(0), online: true });
+const freshPlayer = (name, id, isBot = false, difficulty = 'normal', strategy = 'trend') => ({ id, name, cash: 500000, shares: Array(6).fill(0), online: !isBot, isBot, difficulty, strategy });
 
 function publicState(room) {
   return {
-    code: room.code, revision: room.revision, hostId: room.hostId, phase: room.phase, round: room.round, max: room.max,
+    code: room.code, build: BUILD, revision: room.revision, hostId: room.hostId, phase: room.phase, round: room.round, max: room.max,
     turn: room.turn, turnId: room.players[room.turn]?.id ?? null,
     prices: room.prices, history: room.history, headline: room.headline, last: room.last, events: room.events.slice(0, 12),
     recap: room.phase === 'done' ? gameRecap(room) : null, banter: marketBanter(room),
-    players: room.players.map(({ id, name, cash, shares, online }) => ({ id, name, cash, shares, online, ready: shares.some(Boolean) }))
+    players: room.players.map(({ id, name, cash, shares, online, isBot, difficulty, strategy }) => ({ id, name, cash, shares, online, isBot: !!isBot, difficulty, strategy, ready: shares.some(Boolean) }))
   };
 }
 function gameRecap(room) {
@@ -92,11 +129,13 @@ function marketBanter(room) {
 }function send(ws, message) { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message)); }
 function broadcast(room) {
   room.revision++;
+  room.lastActivity = Date.now();
   const snapshot = publicState(room);
   for (const player of room.players) {
     const ws = player.socket;
     if (ws?.readyState === WebSocket.OPEN) send(ws, { type: 'state', state: snapshot, isHost: player.id === room.hostId });
   }
+  persistRooms();
 }
 function log(room, message) { room.events.unshift(message); room.events = room.events.slice(0, 12); }
 function error(ws, message) { send(ws, { type: 'error', message }); }
@@ -115,13 +154,40 @@ function attach(ws, room, player, type) {
   ws.room = room; ws.playerId = player.id; player.socket = ws; player.online = true;
   send(ws, { type, roomCode: room.code, playerId: player.id, isHost: player.id === room.hostId });
   broadcast(room);
+  if (room.phase === 'playing' && room.players[room.turn]?.isBot) scheduleBotTurn(room);
 }
 function addRoom(ws, m) {
   const name = String(m.name || '').trim().slice(0, 18);
   if (!name) return error(ws, 'Enter your name first.');
-  const room = { code: roomCode(), revision: 0, hostId: '', phase: 'lobby', round: 0, max: [12,20,30].includes(Number(m.rounds)) ? Number(m.rounds) : 12, turn: 0, prices: Array(6).fill(100), history: Array.from({ length: 6 }, () => [100]), headline: null, last: '', events: [], purchases: [], players: [] };
+  const room = { code: roomCode(), revision: 0, hostId: '', phase: 'lobby', round: 0, max: [12,20,30].includes(Number(m.rounds)) ? Number(m.rounds) : 12, turn: 0, prices: Array(6).fill(100), history: Array.from({ length: 6 }, () => [100]), headline: null, last: '', events: [], purchases: [], players: [], lastActivity: Date.now() };
   const player = freshPlayer(name, randomUUID()); room.hostId = player.id; room.players.push(player); rooms.set(room.code, room);
   attach(ws, room, player, 'created');
+}
+function addBot(ws, m) {
+  const [room, host] = getPlayer(ws, m);
+  if (!room || !host || room.hostId !== host.id) return error(ws, 'Only the host can add a bot.');
+  if (room.phase !== 'lobby') return error(ws, 'Bots can only join before the game starts.');
+  if (room.players.length >= 6) return error(ws, 'This room is full.');
+  const botNumber = room.players.filter(p => p.isBot).length + 1;
+  const difficulty = ['easy', 'normal', 'hard'].includes(m.difficulty) ? m.difficulty : 'normal';
+  const strategy = ['trend', 'value', 'contrarian'].includes(m.strategy) ? m.strategy : 'trend';
+  const bot = freshPlayer(`TickerBot ${botNumber}`, `bot-${randomUUID()}`, true, difficulty, strategy);
+  room.players.push(bot);
+  log(room, `${bot.name} joined the room. Ready to speculate.`);
+  broadcast(room);
+}
+function rematch(ws, m) {
+  const [room, host] = getPlayer(ws, m);
+  if (!room || !host || room.hostId !== host.id) return error(ws, 'Only the host can start a rematch.');
+  if (room.phase !== 'done') return error(ws, 'Finish the current game before starting a rematch.');
+  room.players = room.players.filter(p => p.isBot || p.id === host.id || p.online);
+  room.players.sort((a,b) => a.id === host.id ? -1 : b.id === host.id ? 1 : 0);
+  for (const player of room.players) { player.cash = 500000; player.shares = Array(6).fill(0); player.online = player.isBot ? false : !!player.socket; }
+  room.phase = 'lobby'; room.round = 0; room.turn = 0; room.prices = Array(6).fill(100);
+  room.history = Array.from({ length: 6 }, () => [100]); room.headline = null; room.last = '';
+  room.events = []; room.purchases = [];
+  log(room, `${host.name} started a rematch. Everyone is back at the opening bell.`);
+  broadcast(room);
 }
 function joinRoom(ws, m) {
   const room = rooms.get(String(m.roomCode || '').toUpperCase());
@@ -165,6 +231,40 @@ function buySell(ws, m) {
   send(ws, { type: 'notice', message: `${qty > 0 ? 'Bought' : 'Sold'} ${Math.abs(qty).toLocaleString()} ${names[stock]} shares at ${formatMoney(room.prices[stock])} per share.` });
 }
 function formatMoney(cents) { return '$' + (cents / 100).toFixed(2); }
+function botOpeningInvestment(room, bot) {
+  const stock = randomInt(names.length), shares = 500, cost = room.prices[stock] * shares;
+  bot.cash -= cost; bot.shares[stock] += shares;
+  room.purchases.push({ name: bot.name, stock, shares, price: room.prices[stock], round: 0 });
+  log(room, `${bot.name} opened a ${names[stock]} position.`);
+}
+function botTrade(room, bot) {
+  const trends = names.map((_, i) => {
+    const series = room.history[i].slice(-4);
+    return { stock: i, momentum: (series.at(-1) ?? room.prices[i]) - (series[0] ?? room.prices[i]), price: room.prices[i] };
+  });
+  if (bot.difficulty === 'easy' && randomInt(4) === 0) return;
+  const weak = bot.strategy === 'value' ? trends.filter(t => t.price >= 140 && bot.shares[t.stock] >= 500).sort((a,b) => b.price - a.price)
+    : bot.strategy === 'contrarian' ? trends.filter(t => t.momentum > 0 && t.price >= 110 && bot.shares[t.stock] >= 500).sort((a,b) => b.momentum - a.momentum)
+    : trends.filter(t => t.momentum < 0 && bot.shares[t.stock] >= 500).sort((a,b) => a.momentum - b.momentum);
+  if (weak.length) {
+    const t = weak[0]; bot.shares[t.stock] -= 500; bot.cash += room.prices[t.stock] * 500;
+    log(room, `${bot.name} sold 500 ${names[t.stock]} shares (${bot.strategy} strategy).`); return;
+  }
+  const picks = trends.filter(t => bot.cash >= room.prices[t.stock] * 500).map(t => ({ ...t,
+    score: bot.strategy === 'value' ? (100 - t.price) + Math.max(-20, t.momentum) * 0.25
+      : bot.strategy === 'contrarian' ? (t.price <= 100 && t.momentum < 0 ? -t.momentum : -1000)
+        : (t.momentum > 0 ? t.momentum * 100 / Math.max(1, t.price) : -1000)
+  })).filter(t => t.score > 0).sort((a,b) => b.score - a.score);
+  if (picks.length) {
+    const t = bot.difficulty === 'easy' && picks.length > 1 ? picks[randomInt(Math.min(2, picks.length))] : picks[0];
+    const lots = bot.difficulty === 'hard' ? 2 : 1, price = room.prices[t.stock];
+    const bought = Math.min(lots, Math.floor(bot.cash / (price * 500)));
+    if (!bought) return;
+    bot.cash -= price * 500 * bought; bot.shares[t.stock] += 500 * bought;
+    room.purchases.push({ name: bot.name, stock: t.stock, shares: 500 * bought, price, round: room.round });
+    log(room, `${bot.name} bought ${500 * bought} ${names[t.stock]} shares (${bot.difficulty} ${bot.strategy}).`);
+  }
+}
 function movePrice(room, stock, delta) {
   const before = room.prices[stock];
   room.prices[stock] += delta;
@@ -194,11 +294,7 @@ function recordHistory(room) {
     if (room.history[i].length > 22) room.history[i].shift();
   });
 }
-function roll(ws, m) {
-  const [room, player] = getPlayer(ws, m); if (!room || !player) return error(ws, 'Join a room first.');
-  if (room.phase !== 'playing') return error(ws, 'The market is not taking rolls right now.');
-  const currentPlayer = room.players[room.turn];
-  if (currentPlayer?.id !== player.id && !(player.id === room.hostId && currentPlayer && !currentPlayer.online)) return error(ws, 'Wait for your turn.');
+function resolveRoll(room, player) {
   const stock = randomInt(6), action = ['up','up','down','down','dividend','dividend'][randomInt(6)], amount = [5,5,10,10,20,20][randomInt(6)];
   const stockName = names[stock];
   if (action === 'dividend') {
@@ -221,9 +317,37 @@ function roll(ws, m) {
     if (room.round >= room.max) {
       room.phase = 'done'; room.players.sort((a,b) => netWorth(b, room) - netWorth(a, room));
       room.last = 'Closing bell! Final portfolios are ranked.'; log(room, room.last);
-    } else { room.phase = 'trade'; room.last += ' Trading is now open.'; }
+    } else {
+      room.phase = 'trade'; room.last += ' Trading is now open.';
+      for (const bot of room.players.filter(p => p.isBot)) botTrade(room, bot);
+    }
   } else recordHistory(room);
   broadcast(room);
+  if (room.phase === 'playing' && room.players[room.turn]?.isBot) scheduleBotTurn(room);
+}
+function scheduleBotTurn(room) {
+  if (room.botScheduled || room.phase !== 'playing' || !room.players[room.turn]?.isBot) return;
+  room.botScheduled = true;
+  setTimeout(() => playBotTurn(room), 850);
+}
+function playBotTurn(room) {
+  if (room.phase !== 'playing') { room.botScheduled = false; return; }
+  const bot = room.players[room.turn];
+  if (!bot?.isBot) { room.botScheduled = false; return; }
+  log(room, `${bot.name} is weighing the market…`); broadcast(room);
+  setTimeout(() => {
+    if (room.phase === 'playing' && room.players[room.turn]?.id === bot.id) {
+      room.botScheduled = false;
+      resolveRoll(room, bot);
+    } else room.botScheduled = false;
+  }, 500);
+}
+function roll(ws, m) {
+  const [room, player] = getPlayer(ws, m); if (!room || !player) return error(ws, 'Join a room first.');
+  if (room.phase !== 'playing') return error(ws, 'The market is not taking rolls right now.');
+  const currentPlayer = room.players[room.turn];
+  if (currentPlayer?.id !== player.id && !(player.id === room.hostId && currentPlayer && !currentPlayer.online)) return error(ws, 'Wait for your turn.');
+  resolveRoll(room, player);
 }
 function netWorth(p, room) { return p.cash + p.shares.reduce((sum, count, i) => sum + count * room.prices[i], 0); }
 function handle(ws, m) {
@@ -231,12 +355,16 @@ function handle(ws, m) {
   if (m.type === 'create') return addRoom(ws, m);
   if (m.type === 'join') return joinRoom(ws, m);
   if (m.type === 'reconnect') return reconnect(ws, m);
+  if (m.type === 'addBot') return addBot(ws, m);
+  if (m.type === 'rematch') return rematch(ws, m);
   if (m.type === 'start') {
     const [room, player] = getPlayer(ws, m);
     if (!room || !player || room.hostId !== player.id) return error(ws, 'Only the room host can start the game.');
     if (room.phase !== 'lobby') return error(ws, 'The game has already started.');
     if (room.players.length < 2) return error(ws, 'At least two players are needed.');
-    room.phase = 'setup'; log(room, 'The host opened the market for opening investments.'); broadcast(room); return;
+    room.phase = 'setup'; log(room, 'The host opened the market for opening investments.');
+    for (const bot of room.players.filter(p => p.isBot)) botOpeningInvestment(room, bot);
+    broadcast(room); return;
   }
   if (m.type === 'trade') return buySell(ws, m);
   if (m.type === 'roll') return roll(ws, m);
@@ -274,4 +402,7 @@ wss.on('connection', ws => {
     }
   });
 });
+await loadRooms();
+process.on('SIGINT', () => { persistRooms().finally(() => process.exit(0)); });
+process.on('SIGTERM', () => { persistRooms().finally(() => process.exit(0)); });
 httpServer.listen(port, '0.0.0.0', () => console.log(`Stock Ticker listening on ${port}`));
