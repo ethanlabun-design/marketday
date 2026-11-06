@@ -162,6 +162,7 @@ function buySell(ws, m) {
     room.last = 'Opening bell! Everyone is invested.'; log(room, 'The opening bell rang. The first player is up.');
   }
   broadcast(room);
+  send(ws, { type: 'notice', message: `${qty > 0 ? 'Bought' : 'Sold'} ${Math.abs(qty).toLocaleString()} ${names[stock]} shares at ${formatMoney(room.prices[stock])} per share.` });
 }
 function formatMoney(cents) { return '$' + (cents / 100).toFixed(2); }
 function movePrice(room, stock, delta) {
