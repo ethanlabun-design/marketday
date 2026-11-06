@@ -6,6 +6,18 @@ import { WebSocketServer, WebSocket } from 'ws';
 const port = Number(process.env.PORT || 3000);
 const html = await readFile(new URL('./index.html', import.meta.url));
 const httpServer = http.createServer((req, res) => {
+  const apiMatch = req.url?.match(/^\/api\/rooms\/(\d{6})$/);
+  if (req.method === 'GET' && apiMatch) {
+    const room = rooms.get(apiMatch[1]);
+    if (!room) {
+      res.writeHead(404, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ error: 'Room not found' }));
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store, max-age=0' });
+    res.end(JSON.stringify({ state: publicState(room) }));
+    return;
+  }
   if (req.url === '/' || req.url?.startsWith('/?')) {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
     res.end(html);
@@ -41,17 +53,49 @@ const freshPlayer = (name, id) => ({ id, name, cash: 500000, shares: Array(6).fi
 
 function publicState(room) {
   return {
-    code: room.code, hostId: room.hostId, phase: room.phase, round: room.round, max: room.max,
+    code: room.code, revision: room.revision, hostId: room.hostId, phase: room.phase, round: room.round, max: room.max,
     turn: room.turn, turnId: room.players[room.turn]?.id ?? null,
     prices: room.prices, history: room.history, headline: room.headline, last: room.last, events: room.events.slice(0, 12),
+    recap: room.phase === 'done' ? gameRecap(room) : null, banter: marketBanter(room),
     players: room.players.map(({ id, name, cash, shares, online }) => ({ id, name, cash, shares, online, ready: shares.some(Boolean) }))
   };
 }
-function send(ws, message) { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message)); }
+function gameRecap(room) {
+  const rankings = [...room.players].sort((a,b) => netWorth(b, room) - netWorth(a, room)).map((p, i) => ({
+    name: p.name, value: netWorth(p, room), change: netWorth(p, room) - 500000, place: i + 1
+  }));
+  const sectors = names.map((name, i) => {
+    const history = room.history[i] || [room.prices[i]], start = history[0] || 100, current = room.prices[i];
+    return { name, start, current, change: current - start, percent: start ? (current - start) / start * 100 : 0 };
+  }).sort((a,b) => b.percent - a.percent);
+  let biggestMove = null;
+  room.history.forEach((history, stock) => history.slice(1).forEach((price, j) => {
+    const delta = price - history[j];
+    if (!biggestMove || Math.abs(delta) > Math.abs(biggestMove.delta)) biggestMove = { stock: names[stock], delta, from: history[j], to: price };
+  }));
+  const bestBuy = [...(room.purchases || [])].map(p => ({
+    ...p, current: room.prices[p.stock], gain: room.prices[p.stock] - p.price,
+    percent: p.price ? (room.prices[p.stock] - p.price) / p.price * 100 : 0
+  })).sort((a,b) => b.percent - a.percent)[0] || null;
+  return { rankings, bestSector: sectors[0], worstSector: sectors.at(-1), biggestMove, bestBuy, headline: room.headline?.title || null };
+}
+function marketBanter(room) {
+  if (room.players.length < 2 || room.phase === 'lobby' || room.phase === 'setup') return 'The market is open. Somebody is already refreshing the leaderboard.';
+  const ranked = [...room.players].sort((a,b) => netWorth(b, room) - netWorth(a, room));
+  const leader = ranked[0], trailer = ranked.at(-1), leadValue = netWorth(leader, room) - 500000;
+  if (ranked.length > 1 && netWorth(leader, room) - netWorth(trailer, room) > 100000)
+    return `${leader.name} is pulling away by ${formatMoney(netWorth(leader, room) - netWorth(trailer, room))}. The rest of the room is definitely not watching.`;
+  if (leadValue > 0) return `${leader.name} is in the green and has started calling every move “conviction.”`;
+  if (trailer.cash > 350000) return `${trailer.name} is holding cash like volatility owes them an apology.`;
+  if (leadValue < 0) return `${leader.name} leads the board. The market would like to remind everyone that “leads” is relative.`;
+  return `${leader.name} is out front. The room has become suspiciously quiet.`;
+}function send(ws, message) { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message)); }
 function broadcast(room) {
+  room.revision++;
+  const snapshot = publicState(room);
   for (const player of room.players) {
     const ws = player.socket;
-    if (ws?.readyState === WebSocket.OPEN) send(ws, { type: 'state', state: publicState(room), isHost: player.id === room.hostId });
+    if (ws?.readyState === WebSocket.OPEN) send(ws, { type: 'state', state: snapshot, isHost: player.id === room.hostId });
   }
 }
 function log(room, message) { room.events.unshift(message); room.events = room.events.slice(0, 12); }
@@ -75,7 +119,7 @@ function attach(ws, room, player, type) {
 function addRoom(ws, m) {
   const name = String(m.name || '').trim().slice(0, 18);
   if (!name) return error(ws, 'Enter your name first.');
-  const room = { code: roomCode(), hostId: '', phase: 'lobby', round: 0, max: [12,20,30].includes(Number(m.rounds)) ? Number(m.rounds) : 12, turn: 0, prices: Array(6).fill(100), history: Array.from({ length: 6 }, () => [100]), headline: null, last: '', events: [], players: [] };
+  const room = { code: roomCode(), revision: 0, hostId: '', phase: 'lobby', round: 0, max: [12,20,30].includes(Number(m.rounds)) ? Number(m.rounds) : 12, turn: 0, prices: Array(6).fill(100), history: Array.from({ length: 6 }, () => [100]), headline: null, last: '', events: [], purchases: [], players: [] };
   const player = freshPlayer(name, randomUUID()); room.hostId = player.id; room.players.push(player); rooms.set(room.code, room);
   attach(ws, room, player, 'created');
 }
@@ -84,9 +128,16 @@ function joinRoom(ws, m) {
   const name = String(m.name || '').trim().slice(0, 18);
   if (!room) return error(ws, 'That room code was not found.');
   if (!name) return error(ws, 'Enter your name first.');
-  if (room.phase !== 'lobby') return error(ws, 'This game has already started.');
+  if (room.phase === 'done') return error(ws, 'This game has ended. Ask the host to start a new room.');
   if (room.players.length >= 6) return error(ws, 'This room is full.');
-  const player = freshPlayer(name, randomUUID()); room.players.push(player); log(room, `${name} joined the room.`); attach(ws, room, player, 'joined');
+  const player = freshPlayer(name, randomUUID());
+  if (['playing', 'trade'].includes(room.phase)) {
+    const stock = randomInt(names.length), lotCost = room.prices[stock] * 500;
+    player.shares[stock] = 500; player.cash -= lotCost;
+    room.purchases.push({ name, stock, shares: 500, price: room.prices[stock], round: room.round });
+    log(room, `${name} joined mid-game with 500 ${names[stock]} shares at ${formatMoney(room.prices[stock])} per share.`);
+  } else log(room, `${name} joined the room.`);
+  room.players.push(player); attach(ws, room, player, 'joined');
 }
 function reconnect(ws, m) {
   const room = rooms.get(String(m.roomCode || '').toUpperCase());
@@ -104,6 +155,7 @@ function buySell(ws, m) {
   if (qty > 0 && player.cash < cost) return error(ws, 'Not enough cash for that purchase.');
   if (qty < 0 && player.shares[stock] < -qty) return error(ws, 'You do not own enough shares to sell that lot.');
   player.cash -= cost; player.shares[stock] += qty;
+  if (qty > 0) room.purchases.push({ name: player.name, stock, shares: qty, price: room.prices[stock], round: room.round });
   log(room, `${player.name} ${qty > 0 ? 'bought' : 'sold'} ${Math.abs(qty).toLocaleString()} ${names[stock]} shares at ${formatMoney(room.prices[stock])}.`);
   if (room.phase === 'setup' && room.players.every(p => p.shares.some(Boolean))) {
     room.phase = 'playing'; room.round = 1; room.turn = 0;
@@ -192,6 +244,14 @@ function handle(ws, m) {
     if (!room || !player || room.hostId !== player.id) return error(ws, 'Only the host can start the next round.');
     if (room.phase !== 'trade') return error(ws, 'The next round is not ready yet.');
     room.round++; room.turn = 0; room.phase = 'playing'; room.last = `Round ${room.round} begins.`; log(room, room.last); broadcast(room); return;
+  }
+  if (m.type === 'endGame') {
+    const [room, player] = getPlayer(ws, m);
+    if (!room || !player || room.hostId !== player.id) return error(ws, 'Only the room host can end the game.');
+    if (['lobby', 'done'].includes(room.phase)) return error(ws, 'There is no active game to end.');
+    room.phase = 'done'; room.players.sort((a,b) => netWorth(b, room) - netWorth(a, room));
+    room.last = `The host ended the game after round ${room.round}. Final portfolios are ranked.`;
+    log(room, room.last); broadcast(room); return;
   }
   error(ws, 'Unknown game action.');
 }
