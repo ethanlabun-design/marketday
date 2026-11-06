@@ -2,5 +2,6 @@ services:
   - type: web
     name: stock-ticker-live
     runtime: node
+    plan: free
     buildCommand: npm install
     startCommand: npm start
