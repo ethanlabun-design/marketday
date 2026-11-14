@@ -26,7 +26,8 @@ Rooms are saved atomically to `data/rooms.json`, restored after a server restart
 - The host enters a nickname, creates a room, and shares the invite link. Guests only enter a nickname from that link.
 - The host can add up to five bots before starting. Choose a Casual, Standard, or Sharp skill and a Trend follower, Value hunter, or Contrarian strategy. Bots invest, roll automatically on their turns, and trade between rounds.
 - The host starts when at least two players have joined. Everyone buys an opening position in 500 share lots.
-- Players take turns rolling. At the end of each round, Marketwire draws a headline that moves one or more sectors.
-- Invest across AI, Crypto, Real Estate, Defense, Government, and Medicine. Splits double holdings at $2; crashes wipe holdings at $0.
-- Between rounds, every player can trade at current prices. The host starts the next round.
+- Players take turns rolling. At the end of each round, Marketwire draws one of 40 headlines that moves one or more sectors.
+- Invest across AI, Crypto, Real Estate, Defense, Government, and Medicine. Follow each sector’s price history and open-to-current change in the live charts. Splits double holdings at $2; crashes wipe holdings at $0.
+- Between rounds, every player can trade at current prices. The host starts the next round. Your Desk shows net worth and an expandable breakdown of cash, each sector’s current position and profit or loss, shorts, options, and debt.
+- The host can choose **Advanced Market** when creating a room. It is off by default, so Classic keeps the original rules. Advanced adds short selling (500-share lots, 150% collateral, margin covers), call and put options ($100 premium, at-the-money strike, three-round expiry), and loans ($1,000 each, up to three, 3% interest per completed round). Options expire for intrinsic value; the premium is the maximum loss. Loan balances and short liabilities count against final portfolio value.
 - Play for 12, 20, or 30 rounds. The highest portfolio value wins. The host can reset the same room for a rematch after the final recap. Player reconnect details are stored per browser tab so multiple players in one browser stay separate.

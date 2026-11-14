@@ -5,7 +5,7 @@ import { randomUUID, randomInt } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 
 const port = Number(process.env.PORT || 3000);
-const BUILD = '2026.11.06.07';
+const BUILD = '2026.11.13.07';
 const DATA_FILE = resolve(process.env.STOCK_TICKER_DATA || './data/rooms.json');
 const ROOM_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const html = await readFile(new URL('./index.html', import.meta.url));
@@ -53,7 +53,7 @@ async function loadRooms() {
     const cutoff = Date.now() - ROOM_RETENTION_MS;
     for (const room of Array.isArray(saved) ? saved : []) {
       if (!/^\d{6}$/.test(room.code || '') || !Array.isArray(room.players) || (room.lastActivity || 0) < cutoff) continue;
-      room.players = room.players.filter(p => p && p.id && typeof p.name === 'string').slice(0, 6).map(p => ({ ...p, socket: null, online: false, isBot: !!p.isBot }));
+      room.players = room.players.filter(p => p && p.id && typeof p.name === 'string').slice(0, 6).map(p => ({ ...p, socket: null, online: false, isBot: !!p.isBot, shorts: Array.isArray(p.shorts) ? p.shorts : Array(6).fill(0), shortProceeds: Array.isArray(p.shortProceeds) ? p.shortProceeds : Array(6).fill(0), shareBasis: Array.isArray(p.shareBasis) ? p.shareBasis : (p.shares || Array(6).fill(0)).map((count,i)=>count*(room.prices?.[i]||100)), assetRealized: Array.isArray(p.assetRealized) ? p.assetRealized : Array(6).fill(0), options: Array.isArray(p.options) ? p.options : [], loanBalance: Number(p.loanBalance) || 0, loanCount: Number(p.loanCount) || 0 }));
       room.max = [12, 20, 30].includes(room.max) ? room.max : 12;
       room.prices = Array.isArray(room.prices) && room.prices.length === 6 ? room.prices : Array(6).fill(100);
       room.history = Array.isArray(room.history) && room.history.length === 6 ? room.history : Array.from({ length: 6 }, () => [100]);
@@ -84,17 +84,39 @@ const headlines = [
   { title: 'INSURERS RETREAT FROM COASTAL MARKETS', detail: 'Higher premiums unsettle property owners and lenders in exposed regions.', moves: [[2, -15], [4, 5]] },
   { title: 'TRADE EMBARGO DISRUPTS WEAPONS SUPPLY', detail: 'Defense contractors face delays while officials search for replacement suppliers.', moves: [[3, -15], [4, 5]] },
   { title: 'COURT BLOCKS A SWEEPING TECH RULE', detail: 'Investors welcome a reprieve for AI developers and crypto platforms.', moves: [[0, 10], [1, 10]] },
-  { title: 'MEDICARE EXPANSION WINS A FINAL VOTE', detail: 'A larger public health budget improves the outlook for medical suppliers.', moves: [[5, 15], [4, 5]] }
+  { title: 'MEDICARE EXPANSION WINS A FINAL VOTE', detail: 'A larger public health budget improves the outlook for medical suppliers.', moves: [[5, 15], [4, 5]] },
+  { title: 'AI AGENT TAKES OVER THE BACK OFFICE', detail: 'Investors cheer a productivity jump while unions and software vendors race to react.', moves: [[0, 15], [4, -5]] },
+  { title: 'CHIPMAKER WARNS OF A PACKAGING BOTTLENECK', detail: 'The latest AI hardware rush meets a very physical supply-chain problem.', moves: [[0, -15], [3, 5]] },
+  { title: 'CRYPTO WALLET BUG FREEZES A POPULAR TOKEN', detail: 'A software flaw sends traders searching for the exit and security firms into overtime.', moves: [[1, -20], [0, -5], [5, 5]] },
+  { title: 'TOKENIZED TREASURIES DRAW BIG MONEY', detail: 'Blockchain fans discover that boring government debt can still attract a crowd.', moves: [[1, 15], [4, 5]] },
+  { title: 'MORTGAGE RATES DIP AFTER INFLATION COOLS', detail: 'Home buyers return to the market and property shares catch a bid.', moves: [[2, 15], [4, -5]] },
+  { title: 'MAJOR DEVELOPER DELAYS THREE PROJECTS', detail: 'Construction costs and cautious lenders put new buildings on hold.', moves: [[2, -15], [3, 5]] },
+  { title: 'ALLIES SIGN A MULTIYEAR DEFENSE PACT', detail: 'Contractors celebrate a long runway of procurement orders.', moves: [[3, 15], [4, 10]] },
+  { title: 'AUDIT FLAGS COST OVERRUNS IN ARMS PROGRAM', detail: 'A procurement review leaves contractors explaining their spreadsheets on live television.', moves: [[3, -15], [4, -5]] },
+  { title: 'GOVERNMENT AWARDS A NATIONAL CLOUD CONTRACT', detail: 'Public agencies move more services online, boosting technology suppliers.', moves: [[4, 15], [0, 5]] },
+  { title: 'COURT DELAYS A MAJOR PUBLIC WORKS PLAN', detail: 'Permits and paperwork keep contractors waiting another quarter.', moves: [[4, -15], [2, -5]] },
+  { title: 'CLINICAL TRIAL SHOWS PROMISING EARLY DATA', detail: 'A small study creates outsized expectations across the biotech pipeline.', moves: [[5, 15], [0, 5]] },
+  { title: 'HOSPITALS FACE A SHORTAGE OF GENERIC DRUGS', detail: 'Manufacturers scramble to fill orders as providers look for alternatives.', moves: [[5, 10], [4, 5], [2, -5]] },
+  { title: 'NEW PRIVACY RULES FORCE A MODEL REDESIGN', detail: 'AI firms face compliance costs while medical data custodians get fresh attention.', moves: [[0, -10], [5, 5]] },
+  { title: 'STABLECOIN BILL CLEARS A KEY VOTE', detail: 'Clearer rules invite institutions in, though traders still read the fine print.', moves: [[1, 15], [4, 5]] },
+  { title: 'COMMERCIAL PROPERTY LENDER CUTS ITS OUTLOOK', detail: 'Refinancing worries spread from downtown offices to the wider real estate market.', moves: [[2, -15], [4, -5]] },
+  { title: 'DRONE CONTRACTS EXPAND AFTER FIELD TESTS', detail: 'Modern defense budgets find room for a new generation of hardware.', moves: [[3, 15], [0, 5]] },
+  { title: 'EMERGENCY SPENDING DEAL AVOIDS SHUTDOWN', detail: 'Agencies keep operating, and suppliers can finally send invoices with confidence.', moves: [[4, 15], [3, 5]] },
+  { title: 'REGULATOR FAST-TRACKS A VACCINE REVIEW', detail: 'A faster review lifts hopes for medical makers and public health procurement.', moves: [[5, 15], [4, 5]] },
+  { title: 'POWER PRICES JUMP AS DATA CENTERS EXPAND', detail: 'AI demand surges, but energy costs squeeze property operators and chip buyers.', moves: [[0, 10], [2, -5], [1, -5]] },
+  { title: 'A MAJOR EXCHANGE ADDS ROUND-THE-CLOCK TRADING', detail: 'Liquidity improves, along with the number of people checking charts at 3 a.m.', moves: [[1, 15], [0, 5]] },
+  { title: 'DEFENSE SPENDING REVIEW SHIFTS TO READINESS', detail: 'Maintenance and logistics firms edge out headline-grabbing weapons programs.', moves: [[3, 5], [4, 10]] },
+  { title: 'PUBLIC HEALTH AGENCY SIGNS A SUPPLY DEAL', detail: 'A new procurement contract steadies demand for essential medical products.', moves: [[5, 10], [4, 10]] }
 ];
-const freshPlayer = (name, id, isBot = false, difficulty = 'normal', strategy = 'trend') => ({ id, name, cash: 500000, shares: Array(6).fill(0), online: !isBot, isBot, difficulty, strategy });
+const freshPlayer = (name, id, isBot = false, difficulty = 'normal', strategy = 'trend') => ({ id, name, cash: 500000, shares: Array(6).fill(0), shareBasis: Array(6).fill(0), shorts: Array(6).fill(0), shortProceeds: Array(6).fill(0), assetRealized: Array(6).fill(0), options: [], loanBalance: 0, loanCount: 0, online: !isBot, isBot, difficulty, strategy });
 
 function publicState(room) {
   return {
-    code: room.code, build: BUILD, revision: room.revision, hostId: room.hostId, phase: room.phase, round: room.round, max: room.max,
+    code: room.code, build: BUILD, revision: room.revision, hostId: room.hostId, phase: room.phase, round: room.round, max: room.max, gameMode: room.gameMode || 'classic',
     turn: room.turn, turnId: room.players[room.turn]?.id ?? null,
     prices: room.prices, history: room.history, headline: room.headline, last: room.last, events: room.events.slice(0, 12),
-    recap: room.phase === 'done' ? gameRecap(room) : null, banter: marketBanter(room),
-    players: room.players.map(({ id, name, cash, shares, online, isBot, difficulty, strategy }) => ({ id, name, cash, shares, online, isBot: !!isBot, difficulty, strategy, ready: shares.some(Boolean) }))
+    recap: room.phase === 'done' ? gameRecap(room) : null, banter: room.banter || marketBanter(room),
+    players: room.players.map(({ id, name, cash, shares, shareBasis, shorts, shortProceeds, assetRealized, options, loanBalance, loanCount, online, isBot, difficulty, strategy }) => ({ id, name, cash, shares, shareBasis, shorts, shortProceeds, assetRealized, options, loanBalance, loanCount, online, isBot: !!isBot, difficulty, strategy, ready: shares.some(Boolean) }))
   };
 }
 function gameRecap(room) {
@@ -118,18 +140,21 @@ function gameRecap(room) {
 }
 function marketBanter(room) {
   if (room.players.length < 2 || room.phase === 'lobby' || room.phase === 'setup') return 'The market is open. Somebody is already refreshing the leaderboard.';
-  const ranked = [...room.players].sort((a,b) => netWorth(b, room) - netWorth(a, room));
-  const leader = ranked[0], trailer = ranked.at(-1), leadValue = netWorth(leader, room) - 500000;
-  if (ranked.length > 1 && netWorth(leader, room) - netWorth(trailer, room) > 100000)
-    return `${leader.name} is pulling away by ${formatMoney(netWorth(leader, room) - netWorth(trailer, room))}. The rest of the room is definitely not watching.`;
-  if (leadValue > 0) return `${leader.name} is in the green and has started calling every move “conviction.”`;
-  if (trailer.cash > 350000) return `${trailer.name} is holding cash like volatility owes them an apology.`;
-  if (leadValue < 0) return `${leader.name} leads the board. The market would like to remind everyone that “leads” is relative.`;
-  return `${leader.name} is out front. The room has become suspiciously quiet.`;
+  const ranked=[...room.players].sort((a,b)=>netWorth(b,room)-netWorth(a,room)),leader=ranked[0],trailer=ranked.at(-1),leadValue=netWorth(leader,room)-500000,gap=netWorth(leader,room)-netWorth(trailer,room),lines=[];
+  if(gap>100000) lines.push(leader.name+' is ahead by '+formatMoney(gap)+'. The leaderboard is trying to act casual.',leader.name+' has opened a '+formatMoney(gap)+' lead. Somewhere, a group chat has gone quiet.','The gap is '+formatMoney(gap)+'. '+trailer.name+' is calling it a “long-term chart pattern.”');
+  if(leadValue>0) lines.push(leader.name+' is up '+formatMoney(leadValue)+'. Their confidence has its own ticker now.',leader.name+' is in the green. Suddenly every earlier decision was “the plan.”',leader.name+' is ahead and has begun explaining the market to the market.');
+  if(trailer.cash>350000) lines.push(trailer.name+' is holding cash like volatility owes them an apology.',trailer.name+' has plenty of cash and absolutely no obligation to use it.',trailer.name+' is keeping powder dry. The powder is starting to ask questions.');
+  if(ranked.some(p=>p.options?.length)) lines.push('There are open options on the board. Time decay has entered the chat.','Someone bought a deadline and called it a strategy. The market will provide a review.');
+  if(ranked.some(p=>p.shorts?.some(Boolean))) lines.push('Short sellers are watching every uptick like it was personally arranged.','Borrowed shares, borrowed confidence. The next headline gets a vote.','The shorts are open; the room has started rooting for a red candle.');
+  if(ranked.some(p=>p.loanBalance>0)) lines.push('Debt is up, optimism is up, and the interest meter is quietly doing its job.','A loan can buy time. It can also buy 3% interest per round.','Someone borrowed $1,000 from future them. Future them has been notified.');
+  if(leadValue<0) lines.push(leader.name+' is leading the board. The board is currently below par.',leader.name+' is out front, in the technical sense that someone has to be.','The market has marked portfolios down. Everyone is now a value investor.');
+  if(!lines.length) lines.push(leader.name+' is out front. Nobody trusts the leaderboard yet.','Portfolios are close. Every headline now has main-character energy.','The market is flat; the players are developing theories.');
+  const recent=room.banterHistory||[],fresh=lines.filter(line=>!recent.includes(line)),pool=fresh.length?fresh:lines,selected=pool[randomInt(pool.length)];room.banterHistory=[...recent,selected].slice(-8);return selected;
 }function send(ws, message) { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message)); }
 function broadcast(room) {
   room.revision++;
   room.lastActivity = Date.now();
+  room.banter = marketBanter(room);
   const snapshot = publicState(room);
   for (const player of room.players) {
     const ws = player.socket;
@@ -159,7 +184,7 @@ function attach(ws, room, player, type) {
 function addRoom(ws, m) {
   const name = String(m.name || '').trim().slice(0, 18);
   if (!name) return error(ws, 'Enter your name first.');
-  const room = { code: roomCode(), revision: 0, hostId: '', phase: 'lobby', round: 0, max: [12,20,30].includes(Number(m.rounds)) ? Number(m.rounds) : 12, turn: 0, prices: Array(6).fill(100), history: Array.from({ length: 6 }, () => [100]), headline: null, last: '', events: [], purchases: [], players: [], lastActivity: Date.now() };
+  const room = { code: roomCode(), revision: 0, hostId: '', phase: 'lobby', round: 0, max: [12,20,30].includes(Number(m.rounds)) ? Number(m.rounds) : 12, gameMode: m.gameMode === 'advanced' ? 'advanced' : 'classic', turn: 0, prices: Array(6).fill(100), history: Array.from({ length: 6 }, () => [100]), headline: null, last: '', events: [], purchases: [], players: [], lastActivity: Date.now() };
   const player = freshPlayer(name, randomUUID()); room.hostId = player.id; room.players.push(player); rooms.set(room.code, room);
   attach(ws, room, player, 'created');
 }
@@ -182,7 +207,7 @@ function rematch(ws, m) {
   if (room.phase !== 'done') return error(ws, 'Finish the current game before starting a rematch.');
   room.players = room.players.filter(p => p.isBot || p.id === host.id || p.online);
   room.players.sort((a,b) => a.id === host.id ? -1 : b.id === host.id ? 1 : 0);
-  for (const player of room.players) { player.cash = 500000; player.shares = Array(6).fill(0); player.online = player.isBot ? false : !!player.socket; }
+  for (const player of room.players) { player.cash = 500000; player.shares = Array(6).fill(0); player.shareBasis = Array(6).fill(0); player.shorts = Array(6).fill(0); player.shortProceeds = Array(6).fill(0); player.assetRealized = Array(6).fill(0); player.options = []; player.loanBalance = 0; player.loanCount = 0; player.online = player.isBot ? false : !!player.socket; }
   room.phase = 'lobby'; room.round = 0; room.turn = 0; room.prices = Array(6).fill(100);
   room.history = Array.from({ length: 6 }, () => [100]); room.headline = null; room.last = '';
   room.events = []; room.purchases = [];
@@ -199,7 +224,7 @@ function joinRoom(ws, m) {
   const player = freshPlayer(name, randomUUID());
   if (['playing', 'trade'].includes(room.phase)) {
     const stock = randomInt(names.length), lotCost = room.prices[stock] * 500;
-    player.shares[stock] = 500; player.cash -= lotCost;
+    player.shares[stock] = 500; player.shareBasis[stock] = lotCost; player.cash -= lotCost;
     room.purchases.push({ name, stock, shares: 500, price: room.prices[stock], round: room.round });
     log(room, `${name} joined mid-game with 500 ${names[stock]} shares at ${formatMoney(room.prices[stock])} per share.`);
   } else log(room, `${name} joined the room.`);
@@ -220,6 +245,11 @@ function buySell(ws, m) {
   const cost = qty * room.prices[stock];
   if (qty > 0 && player.cash < cost) return error(ws, 'Not enough cash for that purchase.');
   if (qty < 0 && player.shares[stock] < -qty) return error(ws, 'You do not own enough shares to sell that lot.');
+  const freeCash = player.cash - shortCollateral(player, room);
+  if (qty > 0 && freeCash < cost) return error(ws, 'That buy would use cash reserved for your short positions. Cover a short or repay the loan first.');
+  player.shareBasis ||= Array(6).fill(0); player.assetRealized ||= Array(6).fill(0);
+  if(qty>0) player.shareBasis[stock]+=cost;
+  else { const held=player.shares[stock],sold=-qty,basis=player.shareBasis[stock]||0;player.assetRealized[stock]+=(room.prices[stock]*sold)-(held?basis*sold/held:0);player.shareBasis[stock]=held?sold>=held?0:basis*(held-sold)/held:0; }
   player.cash -= cost; player.shares[stock] += qty;
   if (qty > 0) room.purchases.push({ name: player.name, stock, shares: qty, price: room.prices[stock], round: room.round });
   log(room, `${player.name} ${qty > 0 ? 'bought' : 'sold'} ${Math.abs(qty).toLocaleString()} ${names[stock]} shares at ${formatMoney(room.prices[stock])}.`);
@@ -230,10 +260,58 @@ function buySell(ws, m) {
   broadcast(room);
   send(ws, { type: 'notice', message: `${qty > 0 ? 'Bought' : 'Sold'} ${Math.abs(qty).toLocaleString()} ${names[stock]} shares at ${formatMoney(room.prices[stock])} per share.` });
 }
+const SHORT_COLLATERAL_RATE = 1.5, SHORT_MAX_SHARES = 5000, OPTION_PREMIUM = 10000, OPTION_MULTIPLIER = 500, OPTION_MAX_CONTRACTS = 5, OPTION_TERM = 3, LOAN_SIZE = 100000, LOAN_MAX_COUNT = 3, LOAN_INTEREST = 0.03;
+function shortCollateral(player, room) { return (player.shorts || []).reduce((sum, count, i) => sum + count * room.prices[i] * SHORT_COLLATERAL_RATE, 0); }
+function optionIntrinsic(option, prices) { return Math.max(0, option.type === 'call' ? prices[option.stock] - option.strike : option.strike - prices[option.stock]) * OPTION_MULTIPLIER * option.contracts; }
+function financialAction(ws, m) {
+  const [room, player] = getPlayer(ws, m); if (!room || !player) return error(ws, 'Join a room first.');
+  if (room.gameMode !== 'advanced') return error(ws, 'This room is using Classic mode. The host can enable Advanced Market when creating a room.');
+  if (room.phase !== 'trade') return error(ws, 'Shorts, options, and loans are available between rounds.');
+    player.shorts ||= Array(6).fill(0); player.shortProceeds ||= Array(6).fill(0); player.assetRealized ||= Array(6).fill(0); player.options ||= []; player.loanBalance ||= 0; player.loanCount ||= 0;
+  const stock = Number(m.stock), lots = Number(m.lots || 1), contracts = Number(m.contracts || 1);
+  if (m.type === 'short' || m.type === 'coverShort') {
+    if (!Number.isInteger(stock) || stock < 0 || stock >= 6 || !Number.isInteger(lots) || lots < 1 || lots > 10) return error(ws, 'Choose a valid short position size.');
+    const qty = lots * 500, price = room.prices[stock];
+    if (m.type === 'short') {
+      if (player.shorts[stock] + qty > SHORT_MAX_SHARES) return error(ws, 'Short positions are capped at 5,000 shares per sector.');
+      if (player.cash < (player.shorts[stock] + qty) * price * SHORT_COLLATERAL_RATE) return error(ws, 'You need 150% cash collateral to open that short.');
+      player.shorts[stock] += qty; player.shortProceeds[stock] += qty * price; player.cash += qty * price;
+      log(room, `${player.name} shorted ${qty.toLocaleString()} ${names[stock]} shares at ${formatMoney(price)}. Collateral is reserved.`);
+    } else {
+      if (player.shorts[stock] < qty) return error(ws, 'You do not have that many short shares to cover.');
+      const cost = qty * price;
+      if (player.cash < cost) return error(ws, 'Not enough cash to cover that short. Take a loan or cover fewer shares.');
+      const oldShorts=player.shorts[stock],proceeds=player.shortProceeds[stock]||0;player.assetRealized[stock]+=(oldShorts?proceeds*qty/oldShorts:0)-cost;player.shortProceeds[stock]=oldShorts?qty>=oldShorts?0:proceeds*(oldShorts-qty)/oldShorts:0;player.cash -= cost; player.shorts[stock] -= qty;
+      log(room, `${player.name} covered ${qty.toLocaleString()} ${names[stock]} short shares at ${formatMoney(price)}.`);
+    }
+    send(ws, { type: 'notice', message: `${m.type === 'short' ? 'Short opened' : 'Short covered'}: ${qty.toLocaleString()} ${names[stock]} shares.` });
+  } else if (m.type === 'buyOption') {
+    if (!Number.isInteger(stock) || stock < 0 || stock >= 6 || !['call','put'].includes(m.optionType) || !Number.isInteger(contracts) || contracts < 1 || contracts > OPTION_MAX_CONTRACTS) return error(ws, 'Choose a valid option.');
+    if (player.options.reduce((sum,option)=>sum+option.contracts,0) + contracts > 10) return error(ws, 'You can hold up to 10 open option contracts.');
+    const premium = OPTION_PREMIUM * contracts;
+    if (player.cash - shortCollateral(player, room) < premium) return error(ws, 'Not enough free cash for that option premium.');
+    player.cash -= premium;
+    player.options.push({ stock, type: m.optionType, strike: room.prices[stock], contracts, premium: OPTION_PREMIUM, premiumTotal: premium, expiresRound: room.round + OPTION_TERM });
+    log(room, `${player.name} bought ${contracts} ${m.optionType.toUpperCase()} contract${contracts === 1 ? '' : 's'} on ${names[stock]}; $100 premium each, strike ${formatMoney(room.prices[stock])}, expires after round ${room.round + OPTION_TERM}.`);
+    send(ws, { type: 'notice', message: `${contracts} ${m.optionType.toUpperCase()} option${contracts === 1 ? '' : 's'} bought for ${formatMoney(premium)} total.` });
+  } else if (m.type === 'takeLoan') {
+    if (player.loanCount >= LOAN_MAX_COUNT) return error(ws, 'You have reached the three-loan limit.');
+    player.loanCount++; player.loanBalance += LOAN_SIZE; player.cash += LOAN_SIZE;
+    log(room, `${player.name} took a $1,000 loan. Interest is 3% each completed round.`);
+    send(ws, { type: 'notice', message: 'Loan received: $1,000. Interest is 3% per round.' });
+  } else if (m.type === 'repayLoan') {
+    const amount = Math.min(50000, player.loanBalance, player.cash);
+    if (amount <= 0) return error(ws, player.loanBalance ? 'You need at least $0.01 cash to repay.' : 'You have no loan balance.');
+    player.cash -= amount; player.loanBalance -= amount;
+    log(room, `${player.name} repaid ${formatMoney(amount)} of their loan.`);
+    send(ws, { type: 'notice', message: `Repaid ${formatMoney(amount)}. Balance: ${formatMoney(player.loanBalance)}.` });
+  }
+  broadcast(room);
+}
 function formatMoney(cents) { return '$' + (cents / 100).toFixed(2); }
 function botOpeningInvestment(room, bot) {
   const stock = randomInt(names.length), shares = 500, cost = room.prices[stock] * shares;
-  bot.cash -= cost; bot.shares[stock] += shares;
+  bot.cash -= cost; bot.shares[stock] += shares; bot.shareBasis[stock]+=cost;
   room.purchases.push({ name: bot.name, stock, shares, price: room.prices[stock], round: 0 });
   log(room, `${bot.name} opened a ${names[stock]} position.`);
 }
@@ -247,7 +325,7 @@ function botTrade(room, bot) {
     : bot.strategy === 'contrarian' ? trends.filter(t => t.momentum > 0 && t.price >= 110 && bot.shares[t.stock] >= 500).sort((a,b) => b.momentum - a.momentum)
     : trends.filter(t => t.momentum < 0 && bot.shares[t.stock] >= 500).sort((a,b) => a.momentum - b.momentum);
   if (weak.length) {
-    const t = weak[0]; bot.shares[t.stock] -= 500; bot.cash += room.prices[t.stock] * 500;
+    const t = weak[0],old=bot.shares[t.stock],basis=bot.shareBasis[t.stock]||0;bot.assetRealized[t.stock]+=(room.prices[t.stock]*500)-(old?basis*500/old:0);bot.shareBasis[t.stock]=old<=500?0:basis*(old-500)/old;bot.shares[t.stock] -= 500; bot.cash += room.prices[t.stock] * 500;
     log(room, `${bot.name} sold 500 ${names[t.stock]} shares (${bot.strategy} strategy).`); return;
   }
   const picks = trends.filter(t => bot.cash >= room.prices[t.stock] * 500).map(t => ({ ...t,
@@ -260,7 +338,7 @@ function botTrade(room, bot) {
     const lots = bot.difficulty === 'hard' ? 2 : 1, price = room.prices[t.stock];
     const bought = Math.min(lots, Math.floor(bot.cash / (price * 500)));
     if (!bought) return;
-    bot.cash -= price * 500 * bought; bot.shares[t.stock] += 500 * bought;
+    bot.cash -= price * 500 * bought; bot.shares[t.stock] += 500 * bought;bot.shareBasis[t.stock]+=price*500*bought;
     room.purchases.push({ name: bot.name, stock: t.stock, shares: 500 * bought, price, round: room.round });
     log(room, `${bot.name} bought ${500 * bought} ${names[t.stock]} shares (${bot.difficulty} ${bot.strategy}).`);
   }
@@ -270,11 +348,11 @@ function movePrice(room, stock, delta) {
   room.prices[stock] += delta;
   let result = `${names[stock]} ${delta > 0 ? '+' : ''}${delta}¢ · ${formatMoney(before)} → ${formatMoney(room.prices[stock])}`;
   if (room.prices[stock] >= 200) {
-    for (const player of room.players) player.shares[stock] *= 2;
+    for (const player of room.players) { player.shares[stock] *= 2; player.shorts ||= Array(6).fill(0); player.shortProceeds ||= Array(6).fill(0); player.shorts[stock] *= 2; for(const option of player.options||[])if(option.stock===stock){option.strike=Math.round(option.strike/2);option.contracts*=2} }
     room.prices[stock] = 100;
     result += ' · split, shares doubled';
   } else if (room.prices[stock] <= 0) {
-    for (const player of room.players) player.shares[stock] = 0;
+    for (const player of room.players) { player.assetRealized ||= Array(6).fill(0);player.assetRealized[stock]-=player.shareBasis?.[stock]||0;player.shareBasis ||= Array(6).fill(0);player.shareBasis[stock]=0;player.shares[stock] = 0; player.shorts ||= Array(6).fill(0);player.shortProceeds ||= Array(6).fill(0);player.assetRealized[stock]+=player.shortProceeds[stock]||0;player.shorts[stock]=0;player.shortProceeds[stock]=0;player.options=(player.options||[]).filter(option=>{if(option.stock!==stock)return true;const payout=option.type==='put'?option.strike*OPTION_MULTIPLIER*option.contracts:0;player.cash+=payout;player.assetRealized[stock]+=payout-(option.premiumTotal??option.premium*option.contracts);log(room,`${player.name}'s ${option.type.toUpperCase()} on ${names[stock]} settled on the crash${payout?` · paid ${formatMoney(payout)}`:' worthless'}.`);return false}) }
     room.prices[stock] = 100;
     result += ' · crash, shares wiped out';
   }
@@ -294,19 +372,46 @@ function recordHistory(room) {
     if (room.history[i].length > 22) room.history[i].shift();
   });
 }
+function settleOptions(room, all = false) {
+  for (const player of room.players) {
+    player.options ||= [];
+    const keep=[];
+    for (const option of player.options) {
+      if (!all && option.expiresRound > room.round) { keep.push(option); continue; }
+      const payout=optionIntrinsic(option,room.prices);player.cash+=payout;
+      player.assetRealized[option.stock]=(player.assetRealized[option.stock]||0)+payout-(option.premiumTotal??option.premium*option.contracts);
+      log(room, `${player.name}'s ${option.type.toUpperCase()} on ${names[option.stock]} expired${payout ? ` · paid ${formatMoney(payout)}` : ' worthless'}.`);
+    }
+    player.options=keep;
+  }
+}
+function chargeLoanInterest(room) {
+  for(const player of room.players) if(player.loanBalance>0){const interest=Math.ceil(player.loanBalance*LOAN_INTEREST);player.loanBalance+=interest;log(room,`${player.name}'s loan accrued ${formatMoney(interest)} interest.`)}
+}
+function maintainShortMargin(room) {
+  for(const player of room.players){
+    player.shorts ||= Array(6).fill(0);
+    while(player.cash+1<shortCollateral(player,room)){
+      const stock=player.shorts.findIndex(count=>count>=500);if(stock<0)break;
+      const cover=500,cost=cover*room.prices[stock];if(player.cash<cost)break;
+      const old=player.shorts[stock],proceeds=player.shortProceeds?.[stock]||0;player.assetRealized[stock]=(player.assetRealized[stock]||0)+(old?proceeds*cover/old:0)-cost;if(player.shortProceeds)player.shortProceeds[stock]=old<=cover?0:proceeds*(old-cover)/old;player.cash-=cost;player.shorts[stock]-=cover;
+      log(room,`${player.name}'s ${names[stock]} short was reduced by a 500-share margin cover.`);
+    }
+  }
+}
 function resolveRoll(room, player) {
   const stock = randomInt(6), action = ['up','up','down','down','dividend','dividend'][randomInt(6)], amount = [5,5,10,10,20,20][randomInt(6)];
   const stockName = names[stock];
   if (action === 'dividend') {
     let paid = 0;
-    if (room.prices[stock] >= 100) for (const p of room.players) { const dividend = p.shares[stock] * amount; p.cash += dividend; paid += dividend; }
+    if (room.prices[stock] >= 100) for (const p of room.players) { const dividend = p.shares[stock] * amount; p.cash += dividend; p.assetRealized ||= Array(6).fill(0);p.assetRealized[stock]+=dividend;paid += dividend; }
     room.last = `${stockName} dividend · ${amount}¢ per share${room.prices[stock] >= 100 ? ` · ${formatMoney(paid)} paid` : ' · below par, no payout'}.`;
     log(room, room.last);
   } else {
     const old = room.prices[stock]; room.prices[stock] += action === 'up' ? amount : -amount;
     let event = `${stockName} ${action} ${amount}¢: ${formatMoney(old)} → ${formatMoney(room.prices[stock])}`;
-    if (room.prices[stock] >= 200) { for (const p of room.players) p.shares[stock] *= 2; room.prices[stock] = 100; event += ' · split; holdings doubled and price reset to par.'; }
-    else if (room.prices[stock] <= 0) { for (const p of room.players) p.shares[stock] = 0; room.prices[stock] = 100; event += ' · crash; shares wiped out and price reset to par.'; }
+    if (room.prices[stock] >= 200) { for (const p of room.players) { p.shares[stock] *= 2; p.shorts ||= Array(6).fill(0);p.shortProceeds ||= Array(6).fill(0); p.shorts[stock] *= 2; for(const option of p.options||[])if(option.stock===stock){option.strike=Math.round(option.strike/2);option.contracts*=2} } room.prices[stock] = 100; event += ' · split; holdings doubled and price reset to par.'; }
+    else if (room.prices[stock] <= 0) { for (const p of room.players) { p.assetRealized ||= Array(6).fill(0);p.assetRealized[stock]-=p.shareBasis?.[stock]||0;p.shareBasis ||= Array(6).fill(0);p.shareBasis[stock]=0;p.shares[stock] = 0; p.shorts ||= Array(6).fill(0);p.shortProceeds ||= Array(6).fill(0);p.assetRealized[stock]+=p.shortProceeds[stock]||0;p.shorts[stock]=0;p.shortProceeds[stock]=0;p.options=(p.options||[]).filter(option=>{if(option.stock!==stock)return true;const payout=option.type==='put'?option.strike*OPTION_MULTIPLIER*option.contracts:0;p.cash+=payout;p.assetRealized[stock]+=payout-(option.premiumTotal??option.premium*option.contracts);log(room,`${p.name}'s ${option.type.toUpperCase()} on ${names[stock]} settled on the crash${payout?` · paid ${formatMoney(payout)}`:' worthless'}.`);return false}) } room.prices[stock] = 100; event += ' · crash; shares wiped out and price reset to par.'; }
     room.last = event; log(room, event);
   }
   room.turn++;
@@ -314,7 +419,9 @@ function resolveRoll(room, player) {
     room.turn = 0;
     applyHeadline(room);
     recordHistory(room);
+    if(room.gameMode==='advanced'){chargeLoanInterest(room);settleOptions(room);maintainShortMargin(room)}
     if (room.round >= room.max) {
+      settleOptions(room,true);
       room.phase = 'done'; room.players.sort((a,b) => netWorth(b, room) - netWorth(a, room));
       room.last = 'Closing bell! Final portfolios are ranked.'; log(room, room.last);
     } else {
@@ -349,7 +456,7 @@ function roll(ws, m) {
   if (currentPlayer?.id !== player.id && !(player.id === room.hostId && currentPlayer && !currentPlayer.online)) return error(ws, 'Wait for your turn.');
   resolveRoll(room, player);
 }
-function netWorth(p, room) { return p.cash + p.shares.reduce((sum, count, i) => sum + count * room.prices[i], 0); }
+function netWorth(p, room) { return p.cash + p.shares.reduce((sum, count, i) => sum + count * room.prices[i], 0) - (p.shorts || []).reduce((sum,count,i)=>sum+count*room.prices[i],0) - (p.loanBalance || 0) + (p.options || []).reduce((sum,option)=>sum+optionIntrinsic(option,room.prices),0); }
 function handle(ws, m) {
   if (m.type === 'ping') return send(ws, { type: 'pong' });
   if (m.type === 'create') return addRoom(ws, m);
@@ -367,6 +474,7 @@ function handle(ws, m) {
     broadcast(room); return;
   }
   if (m.type === 'trade') return buySell(ws, m);
+  if (['short','coverShort','buyOption','takeLoan','repayLoan'].includes(m.type)) return financialAction(ws,m);
   if (m.type === 'roll') return roll(ws, m);
   if (m.type === 'nextRound') {
     const [room, player] = getPlayer(ws, m);
@@ -378,7 +486,7 @@ function handle(ws, m) {
     const [room, player] = getPlayer(ws, m);
     if (!room || !player || room.hostId !== player.id) return error(ws, 'Only the room host can end the game.');
     if (['lobby', 'done'].includes(room.phase)) return error(ws, 'There is no active game to end.');
-    room.phase = 'done'; room.players.sort((a,b) => netWorth(b, room) - netWorth(a, room));
+    if(room.gameMode==='advanced')settleOptions(room,true);room.phase = 'done'; room.players.sort((a,b) => netWorth(b, room) - netWorth(a, room));
     room.last = `The host ended the game after round ${room.round}. Final portfolios are ranked.`;
     log(room, room.last); broadcast(room); return;
   }
