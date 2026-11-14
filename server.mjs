@@ -5,7 +5,7 @@ import { randomUUID, randomInt } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 
 const port = Number(process.env.PORT || 3000);
-const BUILD = '2026.11.13.07';
+const BUILD = '2026.11.13.08';
 const DATA_FILE = resolve(process.env.STOCK_TICKER_DATA || './data/rooms.json');
 const ROOM_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const html = await readFile(new URL('./index.html', import.meta.url));
@@ -57,7 +57,11 @@ async function loadRooms() {
       room.max = [12, 20, 30].includes(room.max) ? room.max : 12;
       room.prices = Array.isArray(room.prices) && room.prices.length === 6 ? room.prices : Array(6).fill(100);
       room.history = Array.isArray(room.history) && room.history.length === 6 ? room.history : Array.from({ length: 6 }, () => [100]);
-      room.events = Array.isArray(room.events) ? room.events.slice(0, 12) : [];
+      room.events = Array.isArray(room.events) ? room.events.slice(0, 20) : [];
+      room.activity = Array.isArray(room.activity) ? room.activity.slice(0,250) : [];
+      room.headlines = Array.isArray(room.headlines) ? room.headlines.slice(0,200) : (room.headline?[room.headline]:[]);
+      room.etfHistory = Array.isArray(room.etfHistory) ? room.etfHistory : Array.from({length:5},()=>[100]);
+      for(const p of room.players){p.etfShares=Array.isArray(p.etfShares)?p.etfShares:Array(5).fill(0);p.etfBasis=Array.isArray(p.etfBasis)?p.etfBasis:Array(5).fill(0)}
       room.purchases = Array.isArray(room.purchases) ? room.purchases : [];
       rooms.set(room.code, room);
     }
@@ -66,6 +70,24 @@ async function loadRooms() {
   }
 }
 const names = ['AI', 'Crypto', 'Real Estate', 'Defense', 'Government', 'Medicine'];
+const tickers = ['AIX','CRYP','REITX','DFNS','CIVX','MEDX'];
+const etfs = [
+  { name: 'Broad Market ETF', ticker: 'CORE', weights: [0.2,0.15,0.15,0.15,0.2,0.15] },
+  { name: 'AI & Robotics ETF', ticker: 'ROBO', weights: [0.65,0.1,0.05,0.05,0.1,0.05] },
+  { name: 'Healthcare ETF', ticker: 'CARE', weights: [0.1,0,0.05,0.05,0.2,0.6] },
+  { name: 'Digital Assets ETF', ticker: 'WEB3', weights: [0.15,0.7,0.05,0.02,0.06,0.02] },
+  { name: 'Infrastructure ETF', ticker: 'BUILD', weights: [0.1,0.05,0.3,0.15,0.3,0.1] }
+];
+function etfPrices(room) { return etfs.map(etf => Math.round(etf.weights.reduce((sum,w,i)=>sum+w*room.prices[i],0))); }
+function portfolioValue(p, room) { return netWorth(p,room); }
+function activity(room, entry) {
+  room.activity ||= [];
+  const signature = `${room.revision||0}:${entry.kind}:${entry.playerId||''}:${entry.asset||''}:${entry.quantity||''}:${entry.round||room.round}`;
+  if (room.activity.some(item=>item.signature===signature)) return;
+  room.activity.unshift({ id: randomUUID(), signature, at: Date.now(), round: room.round, ...entry });
+  room.activity = room.activity.slice(0,250);
+}
+function roundValues(room) { room.roundStartValues = Object.fromEntries(room.players.map(p=>[p.id,portfolioValue(p,room)])); }
 const headlines = [
   { title: 'AI LABS UNVEIL A MODEL THAT CAN REASON', detail: 'A leap in machine intelligence sends investors racing toward the sector.', moves: [[0, 20], [4, 5]] },
   { title: 'DATA CENTERS HIT A POWER BOTTLENECK', detail: 'Grid constraints put a chill on the artificial intelligence trade.', moves: [[0, -15], [2, 5]] },
@@ -108,15 +130,17 @@ const headlines = [
   { title: 'DEFENSE SPENDING REVIEW SHIFTS TO READINESS', detail: 'Maintenance and logistics firms edge out headline-grabbing weapons programs.', moves: [[3, 5], [4, 10]] },
   { title: 'PUBLIC HEALTH AGENCY SIGNS A SUPPLY DEAL', detail: 'A new procurement contract steadies demand for essential medical products.', moves: [[5, 10], [4, 10]] }
 ];
-const freshPlayer = (name, id, isBot = false, difficulty = 'normal', strategy = 'trend') => ({ id, name, cash: 500000, shares: Array(6).fill(0), shareBasis: Array(6).fill(0), shorts: Array(6).fill(0), shortProceeds: Array(6).fill(0), assetRealized: Array(6).fill(0), options: [], loanBalance: 0, loanCount: 0, online: !isBot, isBot, difficulty, strategy });
+const freshPlayer = (name, id, isBot = false, difficulty = 'normal', strategy = 'trend') => ({ id, name, cash: 500000, shares: Array(6).fill(0), shareBasis: Array(6).fill(0), etfShares:Array(5).fill(0), etfBasis:Array(5).fill(0), shorts: Array(6).fill(0), shortProceeds: Array(6).fill(0), assetRealized: Array(6).fill(0), options: [], loanBalance: 0, loanCount: 0, online: !isBot, isBot, difficulty, strategy });
 
 function publicState(room) {
   return {
     code: room.code, build: BUILD, revision: room.revision, hostId: room.hostId, phase: room.phase, round: room.round, max: room.max, gameMode: room.gameMode || 'classic',
     turn: room.turn, turnId: room.players[room.turn]?.id ?? null,
-    prices: room.prices, history: room.history, headline: room.headline, last: room.last, events: room.events.slice(0, 12),
+    prices: room.prices, history: room.history, headline: room.headline, headlines: room.headlines||[], last: room.last, events: room.events.slice(0, 20), activity: room.activity||[], etfs, etfPrices: etfPrices(room), etfHistory:room.etfHistory||[], tickers,
+    sentiment: (()=>{const moves=(room.headline?.impacts||[]).map(x=>Number(String(x).match(/([+-]\d+)¢/)?.[1]||0));const score=moves.reduce((a,b)=>a+b,0);return {score,label:score>0?'Bullish':score<0?'Bearish':'Neutral'};})(),
     recap: room.phase === 'done' ? gameRecap(room) : null, banter: room.banter || marketBanter(room),
-    players: room.players.map(({ id, name, cash, shares, shareBasis, shorts, shortProceeds, assetRealized, options, loanBalance, loanCount, online, isBot, difficulty, strategy }) => ({ id, name, cash, shares, shareBasis, shorts, shortProceeds, assetRealized, options, loanBalance, loanCount, online, isBot: !!isBot, difficulty, strategy, ready: shares.some(Boolean) }))
+    leaderboard: [...room.players].sort((a,b)=>portfolioValue(b,room)-portfolioValue(a,room)).map((p,i)=>({id:p.id,place:i+1,value:portfolioValue(p,room),cash:p.cash,returns:portfolioValue(p,room)-500000,percent:(portfolioValue(p,room)-500000)/500000*100,roundChange:portfolioValue(p,room)-(room.roundStartValues?.[p.id]??portfolioValue(p,room))})),
+    players: room.players.map(({ id, name, cash, shares, shareBasis, shorts, shortProceeds, assetRealized, options, loanBalance, loanCount, etfShares, etfBasis, online, isBot, difficulty, strategy }) => ({ id, name, cash, shares, shareBasis, shorts, shortProceeds, assetRealized, options, loanBalance, loanCount, etfShares:etfShares||Array(etfs.length).fill(0), etfBasis:etfBasis||Array(etfs.length).fill(0), online, isBot: !!isBot, difficulty, strategy, ready: shares.some(Boolean)||!!etfShares?.some(Boolean) }))
   };
 }
 function gameRecap(room) {
@@ -162,7 +186,7 @@ function broadcast(room) {
   }
   persistRooms();
 }
-function log(room, message) { room.events.unshift(message); room.events = room.events.slice(0, 12); }
+function log(room, message) { room.events.unshift(message); room.events = room.events.slice(0, 20); }
 function error(ws, message) { send(ws, { type: 'error', message }); }
 function getPlayer(ws, m) {
   const room = rooms.get(String(m.roomCode || '').toUpperCase());
@@ -184,7 +208,7 @@ function attach(ws, room, player, type) {
 function addRoom(ws, m) {
   const name = String(m.name || '').trim().slice(0, 18);
   if (!name) return error(ws, 'Enter your name first.');
-  const room = { code: roomCode(), revision: 0, hostId: '', phase: 'lobby', round: 0, max: [12,20,30].includes(Number(m.rounds)) ? Number(m.rounds) : 12, gameMode: m.gameMode === 'advanced' ? 'advanced' : 'classic', turn: 0, prices: Array(6).fill(100), history: Array.from({ length: 6 }, () => [100]), headline: null, last: '', events: [], purchases: [], players: [], lastActivity: Date.now() };
+  const room = { code: roomCode(), revision: 0, hostId: '', phase: 'lobby', round: 0, max: [12,20,30].includes(Number(m.rounds)) ? Number(m.rounds) : 12, gameMode: m.gameMode === 'advanced' ? 'advanced' : 'classic', turn: 0, prices: Array(6).fill(100), history: Array.from({ length: 6 }, () => [100]), headline: null, headlines: [], last: '', events: [], activity: [], purchases: [], players: [], lastActivity: Date.now() };
   const player = freshPlayer(name, randomUUID()); room.hostId = player.id; room.players.push(player); rooms.set(room.code, room);
   attach(ws, room, player, 'created');
 }
@@ -207,10 +231,10 @@ function rematch(ws, m) {
   if (room.phase !== 'done') return error(ws, 'Finish the current game before starting a rematch.');
   room.players = room.players.filter(p => p.isBot || p.id === host.id || p.online);
   room.players.sort((a,b) => a.id === host.id ? -1 : b.id === host.id ? 1 : 0);
-  for (const player of room.players) { player.cash = 500000; player.shares = Array(6).fill(0); player.shareBasis = Array(6).fill(0); player.shorts = Array(6).fill(0); player.shortProceeds = Array(6).fill(0); player.assetRealized = Array(6).fill(0); player.options = []; player.loanBalance = 0; player.loanCount = 0; player.online = player.isBot ? false : !!player.socket; }
+  for (const player of room.players) { player.cash = 500000; player.shares = Array(6).fill(0); player.shareBasis = Array(6).fill(0);player.etfShares=Array(5).fill(0);player.etfBasis=Array(5).fill(0); player.shorts = Array(6).fill(0); player.shortProceeds = Array(6).fill(0); player.assetRealized = Array(6).fill(0); player.options = []; player.loanBalance = 0; player.loanCount = 0; player.online = player.isBot ? false : !!player.socket; }
   room.phase = 'lobby'; room.round = 0; room.turn = 0; room.prices = Array(6).fill(100);
-  room.history = Array.from({ length: 6 }, () => [100]); room.headline = null; room.last = '';
-  room.events = []; room.purchases = [];
+  room.history = Array.from({ length: 6 }, () => [100]);room.etfHistory=Array.from({length:5},()=>[100]); room.headline = null; room.headlines=[]; room.last = '';
+  room.events = []; room.activity=[];room.headlines=[];room.etfHistory=Array.from({length:5},()=>[100]);room.purchases = [];
   log(room, `${host.name} started a rematch. Everyone is back at the opening bell.`);
   broadcast(room);
 }
@@ -226,9 +250,10 @@ function joinRoom(ws, m) {
     const stock = randomInt(names.length), lotCost = room.prices[stock] * 500;
     player.shares[stock] = 500; player.shareBasis[stock] = lotCost; player.cash -= lotCost;
     room.purchases.push({ name, stock, shares: 500, price: room.prices[stock], round: room.round });
+    activity(room,{kind:'buy',playerId:player.id,playerName:player.name,asset:names[stock],ticker:tickers[stock],quantity:500,price:room.prices[stock],round:room.round});
     log(room, `${name} joined mid-game with 500 ${names[stock]} shares at ${formatMoney(room.prices[stock])} per share.`);
   } else log(room, `${name} joined the room.`);
-  room.players.push(player); attach(ws, room, player, 'joined');
+  room.players.push(player); activity(room,{kind:'join',playerId:player.id,playerName:player.name,asset:'Market',quantity:1,round:room.round});log(room,`${player.name} joined the room.`);attach(ws, room, player, 'joined');
 }
 function reconnect(ws, m) {
   const room = rooms.get(String(m.roomCode || '').toUpperCase());
@@ -240,6 +265,14 @@ function reconnect(ws, m) {
 function buySell(ws, m) {
   const [room, player] = getPlayer(ws, m); if (!room || !player) return error(ws, 'Join a room first.');
   if (!['setup', 'trade'].includes(room.phase)) return error(ws, 'Trading is closed right now.');
+  if(m.assetType==='etf'){
+    const index=Number(m.stock),qty=Number(m.shares),price=etfPrices(room)[index];
+    if(!Number.isInteger(index)||index<0||index>=etfs.length||!Number.isInteger(qty)||!qty||Math.abs(qty)%500||Math.abs(qty)>10000)return error(ws,'Choose a valid ETF order in 500-share lots.');
+    const cost=price*qty;player.etfShares||=Array(etfs.length).fill(0);player.etfBasis||=Array(etfs.length).fill(0);
+    if(qty>0&&player.cash<cost)return error(ws,'Not enough cash for that ETF purchase.');if(qty<0&&player.etfShares[index]<-qty)return error(ws,'You do not own enough ETF shares to sell.');
+    if(qty>0)player.etfBasis[index]+=cost;else{const held=player.etfShares[index];player.etfBasis[index]=held<=-qty?0:player.etfBasis[index]*(held+qty)/held}
+    player.cash-=cost;player.etfShares[index]+=qty;activity(room,{kind:qty>0?'buy':'sell',playerId:player.id,playerName:player.name,asset:etfs[index].ticker,assetName:etfs[index].name,quantity:Math.abs(qty),price,round:room.round});log(room,`${player.name} ${qty>0?'bought':'sold'} ${Math.abs(qty).toLocaleString()} ${etfs[index].name} shares at ${formatMoney(price)}.`);broadcast(room);send(ws,{type:'notice',message:`${qty>0?'Bought':'Sold'} ${Math.abs(qty).toLocaleString()} ${etfs[index].ticker} at ${formatMoney(price)} per share.`});return;
+  }
   const stock = Number(m.stock), qty = Number(m.shares);
   if (!Number.isInteger(stock) || stock < 0 || stock >= 6 || !Number.isInteger(qty) || qty === 0 || Math.abs(qty) % 500 !== 0 || Math.abs(qty) > 10000) return error(ws, 'That trade is not valid.');
   const cost = qty * room.prices[stock];
@@ -251,10 +284,11 @@ function buySell(ws, m) {
   if(qty>0) player.shareBasis[stock]+=cost;
   else { const held=player.shares[stock],sold=-qty,basis=player.shareBasis[stock]||0;player.assetRealized[stock]+=(room.prices[stock]*sold)-(held?basis*sold/held:0);player.shareBasis[stock]=held?sold>=held?0:basis*(held-sold)/held:0; }
   player.cash -= cost; player.shares[stock] += qty;
+  activity(room,{kind:qty>0?'buy':'sell',playerId:player.id,playerName:player.name,asset:names[stock],ticker:tickers[stock],quantity:Math.abs(qty),price:room.prices[stock],round:room.round});
   if (qty > 0) room.purchases.push({ name: player.name, stock, shares: qty, price: room.prices[stock], round: room.round });
   log(room, `${player.name} ${qty > 0 ? 'bought' : 'sold'} ${Math.abs(qty).toLocaleString()} ${names[stock]} shares at ${formatMoney(room.prices[stock])}.`);
-  if (room.phase === 'setup' && room.players.every(p => p.shares.some(Boolean))) {
-    room.phase = 'playing'; room.round = 1; room.turn = 0;
+  if (room.phase === 'setup' && room.players.every(p => p.shares.some(Boolean)||p.etfShares?.some(Boolean))) {
+    room.phase = 'playing'; room.round = 1; room.turn = 0;roundValues(room);
     room.last = 'Opening bell! Everyone is invested.'; log(room, 'The opening bell rang. The first player is up.');
   }
   broadcast(room);
@@ -276,12 +310,14 @@ function financialAction(ws, m) {
       if (player.shorts[stock] + qty > SHORT_MAX_SHARES) return error(ws, 'Short positions are capped at 5,000 shares per sector.');
       if (player.cash < (player.shorts[stock] + qty) * price * SHORT_COLLATERAL_RATE) return error(ws, 'You need 150% cash collateral to open that short.');
       player.shorts[stock] += qty; player.shortProceeds[stock] += qty * price; player.cash += qty * price;
+      activity(room,{kind:'short',playerId:player.id,playerName:player.name,asset:names[stock],ticker:tickers[stock],quantity:qty,price,round:room.round});
       log(room, `${player.name} shorted ${qty.toLocaleString()} ${names[stock]} shares at ${formatMoney(price)}. Collateral is reserved.`);
     } else {
       if (player.shorts[stock] < qty) return error(ws, 'You do not have that many short shares to cover.');
       const cost = qty * price;
       if (player.cash < cost) return error(ws, 'Not enough cash to cover that short. Take a loan or cover fewer shares.');
       const oldShorts=player.shorts[stock],proceeds=player.shortProceeds[stock]||0;player.assetRealized[stock]+=(oldShorts?proceeds*qty/oldShorts:0)-cost;player.shortProceeds[stock]=oldShorts?qty>=oldShorts?0:proceeds*(oldShorts-qty)/oldShorts:0;player.cash -= cost; player.shorts[stock] -= qty;
+      activity(room,{kind:'cover',playerId:player.id,playerName:player.name,asset:names[stock],ticker:tickers[stock],quantity:qty,price,round:room.round});
       log(room, `${player.name} covered ${qty.toLocaleString()} ${names[stock]} short shares at ${formatMoney(price)}.`);
     }
     send(ws, { type: 'notice', message: `${m.type === 'short' ? 'Short opened' : 'Short covered'}: ${qty.toLocaleString()} ${names[stock]} shares.` });
@@ -292,17 +328,20 @@ function financialAction(ws, m) {
     if (player.cash - shortCollateral(player, room) < premium) return error(ws, 'Not enough free cash for that option premium.');
     player.cash -= premium;
     player.options.push({ stock, type: m.optionType, strike: room.prices[stock], contracts, premium: OPTION_PREMIUM, premiumTotal: premium, expiresRound: room.round + OPTION_TERM });
+    activity(room,{kind:'option',playerId:player.id,playerName:player.name,asset:`${tickers[stock]} ${m.optionType.toUpperCase()} option`,ticker:tickers[stock],quantity:contracts,price:OPTION_PREMIUM,round:room.round});
     log(room, `${player.name} bought ${contracts} ${m.optionType.toUpperCase()} contract${contracts === 1 ? '' : 's'} on ${names[stock]}; $100 premium each, strike ${formatMoney(room.prices[stock])}, expires after round ${room.round + OPTION_TERM}.`);
     send(ws, { type: 'notice', message: `${contracts} ${m.optionType.toUpperCase()} option${contracts === 1 ? '' : 's'} bought for ${formatMoney(premium)} total.` });
   } else if (m.type === 'takeLoan') {
     if (player.loanCount >= LOAN_MAX_COUNT) return error(ws, 'You have reached the three-loan limit.');
     player.loanCount++; player.loanBalance += LOAN_SIZE; player.cash += LOAN_SIZE;
+    activity(room,{kind:'loan',playerId:player.id,playerName:player.name,asset:'Took a $1,000 game loan',round:room.round});
     log(room, `${player.name} took a $1,000 loan. Interest is 3% each completed round.`);
     send(ws, { type: 'notice', message: 'Loan received: $1,000. Interest is 3% per round.' });
   } else if (m.type === 'repayLoan') {
     const amount = Math.min(50000, player.loanBalance, player.cash);
     if (amount <= 0) return error(ws, player.loanBalance ? 'You need at least $0.01 cash to repay.' : 'You have no loan balance.');
     player.cash -= amount; player.loanBalance -= amount;
+    activity(room,{kind:'loan',playerId:player.id,playerName:player.name,asset:`Repaid ${formatMoney(amount)} of a game loan`,round:room.round});
     log(room, `${player.name} repaid ${formatMoney(amount)} of their loan.`);
     send(ws, { type: 'notice', message: `Repaid ${formatMoney(amount)}. Balance: ${formatMoney(player.loanBalance)}.` });
   }
@@ -312,6 +351,7 @@ function formatMoney(cents) { return '$' + (cents / 100).toFixed(2); }
 function botOpeningInvestment(room, bot) {
   const stock = randomInt(names.length), shares = 500, cost = room.prices[stock] * shares;
   bot.cash -= cost; bot.shares[stock] += shares; bot.shareBasis[stock]+=cost;
+  activity(room,{kind:'buy',playerId:bot.id,playerName:bot.name,asset:names[stock],ticker:tickers[stock],quantity:shares,price:room.prices[stock],round:0});
   room.purchases.push({ name: bot.name, stock, shares, price: room.prices[stock], round: 0 });
   log(room, `${bot.name} opened a ${names[stock]} position.`);
 }
@@ -326,7 +366,7 @@ function botTrade(room, bot) {
     : trends.filter(t => t.momentum < 0 && bot.shares[t.stock] >= 500).sort((a,b) => a.momentum - b.momentum);
   if (weak.length) {
     const t = weak[0],old=bot.shares[t.stock],basis=bot.shareBasis[t.stock]||0;bot.assetRealized[t.stock]+=(room.prices[t.stock]*500)-(old?basis*500/old:0);bot.shareBasis[t.stock]=old<=500?0:basis*(old-500)/old;bot.shares[t.stock] -= 500; bot.cash += room.prices[t.stock] * 500;
-    log(room, `${bot.name} sold 500 ${names[t.stock]} shares (${bot.strategy} strategy).`); return;
+    activity(room,{kind:'sell',playerId:bot.id,playerName:bot.name,asset:names[t.stock],ticker:tickers[t.stock],quantity:500,price:room.prices[t.stock],round:room.round});log(room, `${bot.name} sold 500 ${names[t.stock]} shares (${bot.strategy} strategy).`); return;
   }
   const picks = trends.filter(t => bot.cash >= room.prices[t.stock] * 500).map(t => ({ ...t,
     score: bot.strategy === 'value' ? (100 - t.price) + Math.max(-20, t.momentum) * 0.25
@@ -338,7 +378,7 @@ function botTrade(room, bot) {
     const lots = bot.difficulty === 'hard' ? 2 : 1, price = room.prices[t.stock];
     const bought = Math.min(lots, Math.floor(bot.cash / (price * 500)));
     if (!bought) return;
-    bot.cash -= price * 500 * bought; bot.shares[t.stock] += 500 * bought;bot.shareBasis[t.stock]+=price*500*bought;
+    bot.cash -= price * 500 * bought; bot.shares[t.stock] += 500 * bought;bot.shareBasis[t.stock]+=price*500*bought;activity(room,{kind:'buy',playerId:bot.id,playerName:bot.name,asset:names[t.stock],ticker:tickers[t.stock],quantity:500*bought,price,round:room.round});
     room.purchases.push({ name: bot.name, stock: t.stock, shares: 500 * bought, price, round: room.round });
     log(room, `${bot.name} bought ${500 * bought} ${names[t.stock]} shares (${bot.difficulty} ${bot.strategy}).`);
   }
@@ -358,10 +398,15 @@ function movePrice(room, stock, delta) {
   }
   return result;
 }
-function applyHeadline(room) {
-  const story = headlines[randomInt(headlines.length)];
-  const impacts = story.moves.map(([stock, delta]) => movePrice(room, stock, delta));
-  room.headline = { title: story.title, detail: story.detail, impacts, round: room.round };
+function applyHeadline(room, rolledBy = null) {
+  let story = headlines[randomInt(headlines.length)];
+  if(room.headline&&headlines.length>1)while(story.title===room.headline.title)story=headlines[randomInt(headlines.length)];
+  // Publish every roll's headline while keeping cumulative headline influence
+  // per round near the old one-headline-per-round balance.
+  const impacts = story.moves.map(([stock, delta]) => movePrice(room, stock, Math.sign(delta) * Math.max(1, Math.round(Math.abs(delta) / Math.max(1, room.players.length)))));
+  room.headline = { id:randomUUID(), title: story.title, detail: story.detail, impacts, affected:story.moves.map(([stock])=>stock), round: room.round, playerId:rolledBy?.id||null, playerName:rolledBy?.name||null };
+  room.headlines=[room.headline,...(room.headlines||[])].slice(0,200);
+  activity(room,{kind:'market',playerId:rolledBy?.id||null,playerName:rolledBy?.name||null,asset:story.title,assetName:story.detail,affected:story.moves.map(([stock])=>stock),impacts,round:room.round});
   room.last = `Marketwire: ${story.title}`;
   log(room, `📰 ${story.title} — ${story.detail}`);
   impacts.forEach(impact => log(room, impact));
@@ -369,8 +414,9 @@ function applyHeadline(room) {
 function recordHistory(room) {
   room.prices.forEach((price, i) => {
     room.history[i].push(price);
-    if (room.history[i].length > 22) room.history[i].shift();
+    if (room.history[i].length > 200) room.history[i].shift();
   });
+  const prices=etfPrices(room);prices.forEach((price,i)=>{room.etfHistory||=Array.from({length:5},()=>[100]);room.etfHistory[i].push(price);if(room.etfHistory[i].length>200)room.etfHistory[i].shift()});
 }
 function settleOptions(room, all = false) {
   for (const player of room.players) {
@@ -415,10 +461,10 @@ function resolveRoll(room, player) {
     room.last = event; log(room, event);
   }
   room.turn++;
+  applyHeadline(room,player);
+  recordHistory(room);
   if (room.turn >= room.players.length) {
     room.turn = 0;
-    applyHeadline(room);
-    recordHistory(room);
     if(room.gameMode==='advanced'){chargeLoanInterest(room);settleOptions(room);maintainShortMargin(room)}
     if (room.round >= room.max) {
       settleOptions(room,true);
@@ -428,7 +474,8 @@ function resolveRoll(room, player) {
       room.phase = 'trade'; room.last += ' Trading is now open.';
       for (const bot of room.players.filter(p => p.isBot)) botTrade(room, bot);
     }
-  } else recordHistory(room);
+  }
+  if(room.last&&!room.last.startsWith('Marketwire:'))activity(room,{kind:'market',asset:room.last,assetName:`${player.name} completed a turn`,round:room.round});
   broadcast(room);
   if (room.phase === 'playing' && room.players[room.turn]?.isBot) scheduleBotTurn(room);
 }
@@ -456,7 +503,7 @@ function roll(ws, m) {
   if (currentPlayer?.id !== player.id && !(player.id === room.hostId && currentPlayer && !currentPlayer.online)) return error(ws, 'Wait for your turn.');
   resolveRoll(room, player);
 }
-function netWorth(p, room) { return p.cash + p.shares.reduce((sum, count, i) => sum + count * room.prices[i], 0) - (p.shorts || []).reduce((sum,count,i)=>sum+count*room.prices[i],0) - (p.loanBalance || 0) + (p.options || []).reduce((sum,option)=>sum+optionIntrinsic(option,room.prices),0); }
+function netWorth(p, room) { return p.cash + p.shares.reduce((sum, count, i) => sum + count * room.prices[i], 0) - (p.shorts || []).reduce((sum,count,i)=>sum+count*room.prices[i],0) - (p.loanBalance || 0) + (p.options || []).reduce((sum,option)=>sum+optionIntrinsic(option,room.prices),0) + (p.etfShares||[]).reduce((sum,count,i)=>sum+count*etfPrices(room)[i],0); }
 function handle(ws, m) {
   if (m.type === 'ping') return send(ws, { type: 'pong' });
   if (m.type === 'create') return addRoom(ws, m);
@@ -480,7 +527,7 @@ function handle(ws, m) {
     const [room, player] = getPlayer(ws, m);
     if (!room || !player || room.hostId !== player.id) return error(ws, 'Only the host can start the next round.');
     if (room.phase !== 'trade') return error(ws, 'The next round is not ready yet.');
-    room.round++; room.turn = 0; room.phase = 'playing'; room.last = `Round ${room.round} begins.`; log(room, room.last); broadcast(room); return;
+    room.round++; room.turn = 0; room.phase = 'playing'; room.last = `Round ${room.round} begins.`; log(room, room.last);roundValues(room);activity(room,{kind:'market',asset:room.last,round:room.round});broadcast(room); return;
   }
   if (m.type === 'endGame') {
     const [room, player] = getPlayer(ws, m);
