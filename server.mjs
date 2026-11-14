@@ -5,7 +5,7 @@ import { randomUUID, randomInt } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 
 const port = Number(process.env.PORT || 3000);
-const BUILD = '2026.11.13.08';
+const BUILD = '2026.11.14.09';
 const DATA_FILE = resolve(process.env.STOCK_TICKER_DATA || './data/rooms.json');
 const ROOM_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const html = await readFile(new URL('./index.html', import.meta.url));
@@ -328,7 +328,7 @@ function financialAction(ws, m) {
     if (player.cash - shortCollateral(player, room) < premium) return error(ws, 'Not enough free cash for that option premium.');
     player.cash -= premium;
     player.options.push({ stock, type: m.optionType, strike: room.prices[stock], contracts, premium: OPTION_PREMIUM, premiumTotal: premium, expiresRound: room.round + OPTION_TERM });
-    activity(room,{kind:'option',playerId:player.id,playerName:player.name,asset:`${tickers[stock]} ${m.optionType.toUpperCase()} option`,ticker:tickers[stock],quantity:contracts,price:OPTION_PREMIUM,round:room.round});
+    activity(room,{kind:'option',playerId:player.id,playerName:player.name,asset:`${names[stock]} ${m.optionType.toUpperCase()} option`,ticker:tickers[stock],quantity:contracts,price:OPTION_PREMIUM,round:room.round});
     log(room, `${player.name} bought ${contracts} ${m.optionType.toUpperCase()} contract${contracts === 1 ? '' : 's'} on ${names[stock]}; $100 premium each, strike ${formatMoney(room.prices[stock])}, expires after round ${room.round + OPTION_TERM}.`);
     send(ws, { type: 'notice', message: `${contracts} ${m.optionType.toUpperCase()} option${contracts === 1 ? '' : 's'} bought for ${formatMoney(premium)} total.` });
   } else if (m.type === 'takeLoan') {
