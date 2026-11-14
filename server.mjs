@@ -5,7 +5,7 @@ import { randomUUID, randomInt } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 
 const port = Number(process.env.PORT || 3000);
-const BUILD = '2026.11.14.09';
+const BUILD = '2026.11.14.10';
 const DATA_FILE = resolve(process.env.STOCK_TICKER_DATA || './data/rooms.json');
 const ROOM_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const html = await readFile(new URL('./index.html', import.meta.url));
@@ -56,6 +56,7 @@ async function loadRooms() {
       room.players = room.players.filter(p => p && p.id && typeof p.name === 'string').slice(0, 6).map(p => ({ ...p, socket: null, online: false, isBot: !!p.isBot, shorts: Array.isArray(p.shorts) ? p.shorts : Array(6).fill(0), shortProceeds: Array.isArray(p.shortProceeds) ? p.shortProceeds : Array(6).fill(0), shareBasis: Array.isArray(p.shareBasis) ? p.shareBasis : (p.shares || Array(6).fill(0)).map((count,i)=>count*(room.prices?.[i]||100)), assetRealized: Array.isArray(p.assetRealized) ? p.assetRealized : Array(6).fill(0), options: Array.isArray(p.options) ? p.options : [], loanBalance: Number(p.loanBalance) || 0, loanCount: Number(p.loanCount) || 0 }));
       room.max = [12, 20, 30].includes(room.max) ? room.max : 12;
       room.prices = Array.isArray(room.prices) && room.prices.length === 6 ? room.prices : Array(6).fill(100);
+      room.lastMoves = Array.isArray(room.lastMoves) && room.lastMoves.length === 6 ? room.lastMoves : Array(6).fill(0);
       room.history = Array.isArray(room.history) && room.history.length === 6 ? room.history : Array.from({ length: 6 }, () => [100]);
       room.events = Array.isArray(room.events) ? room.events.slice(0, 20) : [];
       room.activity = Array.isArray(room.activity) ? room.activity.slice(0,250) : [];
@@ -136,7 +137,7 @@ function publicState(room) {
   return {
     code: room.code, build: BUILD, revision: room.revision, hostId: room.hostId, phase: room.phase, round: room.round, max: room.max, gameMode: room.gameMode || 'classic',
     turn: room.turn, turnId: room.players[room.turn]?.id ?? null,
-    prices: room.prices, history: room.history, headline: room.headline, headlines: room.headlines||[], last: room.last, events: room.events.slice(0, 20), activity: room.activity||[], etfs, etfPrices: etfPrices(room), etfHistory:room.etfHistory||[], tickers,
+    prices: room.prices, history: room.history, lastMoves:room.lastMoves||Array(6).fill(0), lastRoll:room.lastRoll||null, headline: room.headline, headlines: room.headlines||[], last: room.last, events: room.events.slice(0, 20), activity: room.activity||[], etfs, etfPrices: etfPrices(room), etfHistory:room.etfHistory||[], tickers,
     sentiment: (()=>{const moves=(room.headline?.impacts||[]).map(x=>Number(String(x).match(/([+-]\d+)¢/)?.[1]||0));const score=moves.reduce((a,b)=>a+b,0);return {score,label:score>0?'Bullish':score<0?'Bearish':'Neutral'};})(),
     recap: room.phase === 'done' ? gameRecap(room) : null, banter: room.banter || marketBanter(room),
     leaderboard: [...room.players].sort((a,b)=>portfolioValue(b,room)-portfolioValue(a,room)).map((p,i)=>({id:p.id,place:i+1,value:portfolioValue(p,room),cash:p.cash,returns:portfolioValue(p,room)-500000,percent:(portfolioValue(p,room)-500000)/500000*100,roundChange:portfolioValue(p,room)-(room.roundStartValues?.[p.id]??portfolioValue(p,room))})),
@@ -208,7 +209,7 @@ function attach(ws, room, player, type) {
 function addRoom(ws, m) {
   const name = String(m.name || '').trim().slice(0, 18);
   if (!name) return error(ws, 'Enter your name first.');
-  const room = { code: roomCode(), revision: 0, hostId: '', phase: 'lobby', round: 0, max: [12,20,30].includes(Number(m.rounds)) ? Number(m.rounds) : 12, gameMode: m.gameMode === 'advanced' ? 'advanced' : 'classic', turn: 0, prices: Array(6).fill(100), history: Array.from({ length: 6 }, () => [100]), headline: null, headlines: [], last: '', events: [], activity: [], purchases: [], players: [], lastActivity: Date.now() };
+  const room = { code: roomCode(), revision: 0, hostId: '', phase: 'lobby', round: 0, lastMoves:Array(6).fill(0), lastRoll:null, max: [12,20,30].includes(Number(m.rounds)) ? Number(m.rounds) : 12, gameMode: m.gameMode === 'advanced' ? 'advanced' : 'classic', turn: 0, prices: Array(6).fill(100), history: Array.from({ length: 6 }, () => [100]), headline: null, headlines: [], last: '', events: [], activity: [], purchases: [], players: [], lastActivity: Date.now() };
   const player = freshPlayer(name, randomUUID()); room.hostId = player.id; room.players.push(player); rooms.set(room.code, room);
   attach(ws, room, player, 'created');
 }
@@ -232,8 +233,8 @@ function rematch(ws, m) {
   room.players = room.players.filter(p => p.isBot || p.id === host.id || p.online);
   room.players.sort((a,b) => a.id === host.id ? -1 : b.id === host.id ? 1 : 0);
   for (const player of room.players) { player.cash = 500000; player.shares = Array(6).fill(0); player.shareBasis = Array(6).fill(0);player.etfShares=Array(5).fill(0);player.etfBasis=Array(5).fill(0); player.shorts = Array(6).fill(0); player.shortProceeds = Array(6).fill(0); player.assetRealized = Array(6).fill(0); player.options = []; player.loanBalance = 0; player.loanCount = 0; player.online = player.isBot ? false : !!player.socket; }
-  room.phase = 'lobby'; room.round = 0; room.turn = 0; room.prices = Array(6).fill(100);
-  room.history = Array.from({ length: 6 }, () => [100]);room.etfHistory=Array.from({length:5},()=>[100]); room.headline = null; room.headlines=[]; room.last = '';
+  room.phase = 'lobby'; room.round = 0; room.turn = 0; room.prices = Array(6).fill(100);room.lastMoves=Array(6).fill(0);room.lastRoll=null;
+  room.history = Array.from({ length: 6 }, () => [100]);room.lastMoves=Array(6).fill(0);room.lastRoll=null;room.etfHistory=Array.from({length:5},()=>[100]); room.headline = null; room.headlines=[]; room.last = '';
   room.events = []; room.activity=[];room.headlines=[];room.etfHistory=Array.from({length:5},()=>[100]);room.purchases = [];
   log(room, `${host.name} started a rematch. Everyone is back at the opening bell.`);
   broadcast(room);
@@ -386,6 +387,7 @@ function botTrade(room, bot) {
 function movePrice(room, stock, delta) {
   const before = room.prices[stock];
   room.prices[stock] += delta;
+  room.lastMoves ||= Array(6).fill(0); room.lastMoves[stock] = (room.lastMoves[stock]||0) + delta;
   let result = `${names[stock]} ${delta > 0 ? '+' : ''}${delta}¢ · ${formatMoney(before)} → ${formatMoney(room.prices[stock])}`;
   if (room.prices[stock] >= 200) {
     for (const player of room.players) { player.shares[stock] *= 2; player.shorts ||= Array(6).fill(0); player.shortProceeds ||= Array(6).fill(0); player.shorts[stock] *= 2; for(const option of player.options||[])if(option.stock===stock){option.strike=Math.round(option.strike/2);option.contracts*=2} }
@@ -446,22 +448,27 @@ function maintainShortMargin(room) {
   }
 }
 function resolveRoll(room, player) {
-  const stock = randomInt(6), action = ['up','up','down','down','dividend','dividend'][randomInt(6)], amount = [5,5,10,10,20,20][randomInt(6)];
-  const stockName = names[stock];
+  const dice = [randomInt(1,7),randomInt(1,7),randomInt(1,7)];
+  const stock = dice[0]-1, action = dice[1]<=2?'up':dice[1]<=4?'down':'dividend', amount = [5,5,10,10,20,20][dice[2]-1];
+  const stockName = names[stock], priceBefore = room.prices[stock];
+  room.lastMoves = Array(6).fill(0); room.lastRoll = null;
+  let dividends=[];
   if (action === 'dividend') {
     let paid = 0;
-    if (room.prices[stock] >= 100) for (const p of room.players) { const dividend = p.shares[stock] * amount; p.cash += dividend; p.assetRealized ||= Array(6).fill(0);p.assetRealized[stock]+=dividend;paid += dividend; }
-    room.last = `${stockName} dividend · ${amount}¢ per share${room.prices[stock] >= 100 ? ` · ${formatMoney(paid)} paid` : ' · below par, no payout'}.`;
+    if (room.prices[stock] >= 100) for (const p of room.players) { const dividend = p.shares[stock] * amount; p.cash += dividend; p.assetRealized ||= Array(6).fill(0);p.assetRealized[stock]+=dividend;paid += dividend;dividends.push({playerId:p.id,playerName:p.name,amount:dividend});if(dividend>0)activity(room,{kind:'dividend',playerId:p.id,playerName:p.name,asset:stockName,quantity:amount,price:dividend,round:room.round}); }
+    room.last = room.prices[stock] >= 100 ? `${stockName} paid ${amount}¢ per share · ${formatMoney(paid)} total dividends.` : `${stockName} dividend declared at ${amount}¢ per share · price below par, no payout.`;
     log(room, room.last);
   } else {
-    const old = room.prices[stock]; room.prices[stock] += action === 'up' ? amount : -amount;
+    const old = room.prices[stock], priceDelta = action === 'up' ? amount : -amount; room.prices[stock] += priceDelta; room.lastMoves[stock] += priceDelta;
     let event = `${stockName} ${action} ${amount}¢: ${formatMoney(old)} → ${formatMoney(room.prices[stock])}`;
     if (room.prices[stock] >= 200) { for (const p of room.players) { p.shares[stock] *= 2; p.shorts ||= Array(6).fill(0);p.shortProceeds ||= Array(6).fill(0); p.shorts[stock] *= 2; for(const option of p.options||[])if(option.stock===stock){option.strike=Math.round(option.strike/2);option.contracts*=2} } room.prices[stock] = 100; event += ' · split; holdings doubled and price reset to par.'; }
     else if (room.prices[stock] <= 0) { for (const p of room.players) { p.assetRealized ||= Array(6).fill(0);p.assetRealized[stock]-=p.shareBasis?.[stock]||0;p.shareBasis ||= Array(6).fill(0);p.shareBasis[stock]=0;p.shares[stock] = 0; p.shorts ||= Array(6).fill(0);p.shortProceeds ||= Array(6).fill(0);p.assetRealized[stock]+=p.shortProceeds[stock]||0;p.shorts[stock]=0;p.shortProceeds[stock]=0;p.options=(p.options||[]).filter(option=>{if(option.stock!==stock)return true;const payout=option.type==='put'?option.strike*OPTION_MULTIPLIER*option.contracts:0;p.cash+=payout;p.assetRealized[stock]+=payout-(option.premiumTotal??option.premium*option.contracts);log(room,`${p.name}'s ${option.type.toUpperCase()} on ${names[stock]} settled on the crash${payout?` · paid ${formatMoney(payout)}`:' worthless'}.`);return false}) } room.prices[stock] = 100; event += ' · crash; shares wiped out and price reset to par.'; }
     room.last = event; log(room, event);
   }
+  const rollSummary = room.last, dicePriceAfter = room.prices[stock];
   room.turn++;
   applyHeadline(room,player);
+  room.lastRoll = { id:randomUUID(), rollerId:player.id, rollerName:player.name, dice, stock, action, amount, priceBefore, dicePriceAfter, priceAfter:room.prices[stock], message:rollSummary, dividends, headline:room.headline?.title||'' };
   recordHistory(room);
   if (room.turn >= room.players.length) {
     room.turn = 0;
