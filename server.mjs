@@ -5,7 +5,7 @@ import { randomUUID, randomInt } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 
 const port = Number(process.env.PORT || 3000);
-const BUILD = '2026.11.14.10';
+const BUILD = '2026.11.21.01';
 const DATA_FILE = resolve(process.env.STOCK_TICKER_DATA || './data/rooms.json');
 const ROOM_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const html = await readFile(new URL('./index.html', import.meta.url));
@@ -64,6 +64,7 @@ async function loadRooms() {
       room.etfHistory = Array.isArray(room.etfHistory) ? room.etfHistory : Array.from({length:5},()=>[100]);
       for(const p of room.players){p.etfShares=Array.isArray(p.etfShares)?p.etfShares:Array(5).fill(0);p.etfBasis=Array.isArray(p.etfBasis)?p.etfBasis:Array(5).fill(0)}
       room.purchases = Array.isArray(room.purchases) ? room.purchases : [];
+      if (!room.players.some(p => p.id === room.ownerId)) room.ownerId = room.hostId;
       rooms.set(room.code, room);
     }
   } catch (err) {
@@ -200,8 +201,33 @@ function roomCode() {
   do { code = String(randomInt(100000, 1000000)); } while (rooms.has(code));
   return code;
 }
+const HOST_GRACE_MS = 30 * 1000;
+const hostHandoffTimers = new Map();
+function cancelHostHandoff(room) {
+  clearTimeout(hostHandoffTimers.get(room.code));
+  hostHandoffTimers.delete(room.code);
+}
+// Give the host a grace period (e.g. a page refresh) before passing hosting to another online player.
+function scheduleHostHandoff(room, host) {
+  cancelHostHandoff(room);
+  hostHandoffTimers.set(room.code, setTimeout(() => {
+    hostHandoffTimers.delete(room.code);
+    if (room.hostId !== host.id || host.online || rooms.get(room.code) !== room) return;
+    const replacement = room.players.find(p => p.id !== host.id && p.online && !p.isBot);
+    if (!replacement) return;
+    room.hostId = replacement.id;
+    log(room, `${host.name} went offline, so ${replacement.name} is hosting for now.`);
+    broadcast(room);
+  }, HOST_GRACE_MS));
+}
 function attach(ws, room, player, type) {
   ws.room = room; ws.playerId = player.id; player.socket = ws; player.online = true;
+  if (room.hostId === player.id) cancelHostHandoff(room);
+  else if (room.ownerId === player.id) {
+    cancelHostHandoff(room);
+    room.hostId = player.id;
+    log(room, `${player.name} is back and hosting again.`);
+  }
   send(ws, { type, roomCode: room.code, playerId: player.id, isHost: player.id === room.hostId });
   broadcast(room);
   if (room.phase === 'playing' && room.players[room.turn]?.isBot) scheduleBotTurn(room);
@@ -210,7 +236,7 @@ function addRoom(ws, m) {
   const name = String(m.name || '').trim().slice(0, 18);
   if (!name) return error(ws, 'Enter your name first.');
   const room = { code: roomCode(), revision: 0, hostId: '', phase: 'lobby', round: 0, lastMoves:Array(6).fill(0), lastRoll:null, max: [12,20,30].includes(Number(m.rounds)) ? Number(m.rounds) : 12, gameMode: m.gameMode === 'advanced' ? 'advanced' : 'classic', turn: 0, prices: Array(6).fill(100), history: Array.from({ length: 6 }, () => [100]), headline: null, headlines: [], last: '', events: [], activity: [], purchases: [], players: [], lastActivity: Date.now() };
-  const player = freshPlayer(name, randomUUID()); room.hostId = player.id; room.players.push(player); rooms.set(room.code, room);
+  const player = freshPlayer(name, randomUUID()); room.hostId = player.id; room.ownerId = player.id; room.players.push(player); rooms.set(room.code, room);
   attach(ws, room, player, 'created');
 }
 function addBot(ws, m) {
@@ -556,10 +582,7 @@ wss.on('connection', ws => {
     const room = ws.room, player = room?.players.find(p => p.id === ws.playerId);
     if (player?.socket === ws) {
       player.online = false; player.socket = null;
-      if (room.hostId === player.id) {
-        const replacement = room.players.find(p => p.id !== player.id && p.online);
-        if (replacement) room.hostId = replacement.id;
-      }
+      if (room.hostId === player.id) scheduleHostHandoff(room, player);
       broadcast(room);
     }
   });
