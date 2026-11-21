@@ -26,7 +26,8 @@ Rooms are saved atomically to `data/rooms.json`, restored after a server restart
 - The host enters a nickname, creates a room, and shares the invite link. Guests only enter a nickname from that link.
 - The host can add up to five bots before starting. Choose a Casual, Standard, or Sharp skill and a Trend follower, Value hunter, or Contrarian strategy. Bots invest, roll automatically on their turns, and trade between rounds.
 - The host starts when at least two players have joined. Everyone buys an opening position in 500 share lots.
-- Players take turns rolling. Marketwire draws one of 40 price-moving headlines after every roll.
+- Players take turns rolling three dice: a **sector** die (which of the six sectors), an **amount** die (5¢, 10¢ or 20¢), and a **move** die (up, down or dividend). Marketwire draws one of 40 price-moving headlines after every roll.
+- When a dividend pays you, a gold notification shows the amount, and Your Desk keeps a running "Dividends received" total. If a dividend is rolled on a sector you own while it is below par, you get a "dividend skipped" notice instead.
 - The market is a bar chart of the six sectors on a fixed $0–$2.00 axis. Tap a bar (or its label) to buy or sell that sector in its own order panel. A dashed par line marks $1.00; sectors below par are drawn darker and hatched with a "No dividend" tag because they pay no dividends. Splits double holdings at $2; crashes wipe holdings at $0.
 - When another player buys, sells, shorts, covers, or buys options, everyone else gets an animated announcement card (for example "Ethan bought AI · 500 shares"). Tap a card or a player chip to see that player's net worth and holdings breakdown.
 - If the host refreshes or briefly drops, they keep hosting. After 30 seconds offline another online player hosts temporarily, and the room creator takes hosting back when they return.

@@ -5,7 +5,7 @@ import { randomUUID, randomInt } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 
 const port = Number(process.env.PORT || 3000);
-const BUILD = '2026.11.21.01';
+const BUILD = '2026.11.21.02';
 const DATA_FILE = resolve(process.env.STOCK_TICKER_DATA || './data/rooms.json');
 const ROOM_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const html = await readFile(new URL('./index.html', import.meta.url));
@@ -142,7 +142,7 @@ function publicState(room) {
     sentiment: (()=>{const moves=(room.headline?.impacts||[]).map(x=>Number(String(x).match(/([+-]\d+)¢/)?.[1]||0));const score=moves.reduce((a,b)=>a+b,0);return {score,label:score>0?'Bullish':score<0?'Bearish':'Neutral'};})(),
     recap: room.phase === 'done' ? gameRecap(room) : null, banter: room.banter || marketBanter(room),
     leaderboard: [...room.players].sort((a,b)=>portfolioValue(b,room)-portfolioValue(a,room)).map((p,i)=>({id:p.id,place:i+1,value:portfolioValue(p,room),cash:p.cash,returns:portfolioValue(p,room)-500000,percent:(portfolioValue(p,room)-500000)/500000*100,roundChange:portfolioValue(p,room)-(room.roundStartValues?.[p.id]??portfolioValue(p,room))})),
-    players: room.players.map(({ id, name, cash, shares, shareBasis, shorts, shortProceeds, assetRealized, options, loanBalance, loanCount, etfShares, etfBasis, online, isBot, difficulty, strategy }) => ({ id, name, cash, shares, shareBasis, shorts, shortProceeds, assetRealized, options, loanBalance, loanCount, etfShares:etfShares||Array(etfs.length).fill(0), etfBasis:etfBasis||Array(etfs.length).fill(0), online, isBot: !!isBot, difficulty, strategy, ready: shares.some(Boolean)||!!etfShares?.some(Boolean) }))
+    players: room.players.map(({ id, name, cash, shares, shareBasis, shorts, shortProceeds, assetRealized, options, loanBalance, loanCount, dividendsTotal, etfShares, etfBasis, online, isBot, difficulty, strategy }) => ({ id, name, cash, shares, shareBasis, shorts, shortProceeds, assetRealized, options, loanBalance, loanCount, dividendsTotal: dividendsTotal || 0, etfShares:etfShares||Array(etfs.length).fill(0), etfBasis:etfBasis||Array(etfs.length).fill(0), online, isBot: !!isBot, difficulty, strategy, ready: shares.some(Boolean)||!!etfShares?.some(Boolean) }))
   };
 }
 function gameRecap(room) {
@@ -258,7 +258,7 @@ function rematch(ws, m) {
   if (room.phase !== 'done') return error(ws, 'Finish the current game before starting a rematch.');
   room.players = room.players.filter(p => p.isBot || p.id === host.id || p.online);
   room.players.sort((a,b) => a.id === host.id ? -1 : b.id === host.id ? 1 : 0);
-  for (const player of room.players) { player.cash = 500000; player.shares = Array(6).fill(0); player.shareBasis = Array(6).fill(0);player.etfShares=Array(5).fill(0);player.etfBasis=Array(5).fill(0); player.shorts = Array(6).fill(0); player.shortProceeds = Array(6).fill(0); player.assetRealized = Array(6).fill(0); player.options = []; player.loanBalance = 0; player.loanCount = 0; player.online = player.isBot ? false : !!player.socket; }
+  for (const player of room.players) { player.cash = 500000; player.shares = Array(6).fill(0); player.shareBasis = Array(6).fill(0);player.etfShares=Array(5).fill(0);player.etfBasis=Array(5).fill(0); player.shorts = Array(6).fill(0); player.shortProceeds = Array(6).fill(0); player.assetRealized = Array(6).fill(0); player.options = []; player.loanBalance = 0; player.loanCount = 0; player.dividendsTotal = 0; player.online = player.isBot ? false : !!player.socket; }
   room.phase = 'lobby'; room.round = 0; room.turn = 0; room.prices = Array(6).fill(100);room.lastMoves=Array(6).fill(0);room.lastRoll=null;
   room.history = Array.from({ length: 6 }, () => [100]);room.lastMoves=Array(6).fill(0);room.lastRoll=null;room.etfHistory=Array.from({length:5},()=>[100]); room.headline = null; room.headlines=[]; room.last = '';
   room.events = []; room.activity=[];room.headlines=[];room.etfHistory=Array.from({length:5},()=>[100]);room.purchases = [];
@@ -481,7 +481,7 @@ function resolveRoll(room, player) {
   let dividends=[];
   if (action === 'dividend') {
     let paid = 0;
-    if (room.prices[stock] >= 100) for (const p of room.players) { const dividend = p.shares[stock] * amount; p.cash += dividend; p.assetRealized ||= Array(6).fill(0);p.assetRealized[stock]+=dividend;paid += dividend;dividends.push({playerId:p.id,playerName:p.name,amount:dividend});if(dividend>0)activity(room,{kind:'dividend',playerId:p.id,playerName:p.name,asset:stockName,quantity:amount,price:dividend,round:room.round}); }
+    if (room.prices[stock] >= 100) for (const p of room.players) { const dividend = p.shares[stock] * amount; p.cash += dividend; p.dividendsTotal = (p.dividendsTotal || 0) + dividend; p.assetRealized ||= Array(6).fill(0);p.assetRealized[stock]+=dividend;paid += dividend;dividends.push({playerId:p.id,playerName:p.name,amount:dividend});if(dividend>0)activity(room,{kind:'dividend',playerId:p.id,playerName:p.name,asset:stockName,quantity:amount,price:dividend,round:room.round}); }
     room.last = room.prices[stock] >= 100 ? `${stockName} paid ${amount}¢ per share · ${formatMoney(paid)} total dividends.` : `${stockName} dividend declared at ${amount}¢ per share · price below par, no payout.`;
     log(room, room.last);
   } else {
